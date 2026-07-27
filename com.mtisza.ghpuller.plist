@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mtisza.ghpuller</string>
+
+    <!-- What to run -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller/refresh.sh</string>
+        <string>all</string>
+    </array>
+
+    <!-- When: every day at 08:00. Change Hour/Minute to taste. For multiple
+         times a day, replace this dict with an <array> of dicts. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Also run whenever the agent loads (i.e. at login) so a refresh still
+         happens if the Mac was powered off at the scheduled time. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller/launchd.err.log</string>
+</dict>
+</plist>

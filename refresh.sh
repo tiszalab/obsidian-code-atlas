@@ -1,14 +1,18 @@
 #!/bin/bash
 # Refresh the gh_puller Obsidian dashboard. Safe to run from cron/launchd,
-# where PATH is minimal — so we set it explicitly and use absolute paths.
+# where PATH is minimal — so we add common install locations and resolve the
+# install directory from this script's location.
 set -euo pipefail
 
-# gh lives in Homebrew; add it (and common bins) to PATH for cron.
-export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+# gh is commonly installed via Homebrew (Apple Silicon or Intel) or at the
+# system level. Add those locations before the existing PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
-# The tool and all its output live in this one folder.
-BASE="/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller"
-PYTHON="/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
+# Resolve this script's directory so the wrapper works wherever it is installed.
+BASE="$(cd "$(dirname "$0")" && pwd)"
+
+# Use the python3 found on PATH, or let the user override with an env variable.
+PYTHON="${GH_PULLER_PYTHON:-python3}"
 LOG="$BASE/refresh.log"
 
 cd "$BASE"

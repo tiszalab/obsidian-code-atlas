@@ -6,7 +6,7 @@ Generates three things from your `gh`-authenticated account:
 
   1. Activity.md      — recent commits across every repo you touch
   2. Repos/ + Repos.base   — one note per repo, browsable as a Base database
-  3. Scripts/ + Scripts.base — every .py / .R / .Rmd / .sh you've written, as searchable notes
+  3. Scripts/ + Scripts.base — every source file you've written, as searchable notes
 
 Everything is regenerated on each run. The Repos/ and Scripts/ folders and the
 Activity.md / *.base files are fully managed by this script — don't hand-edit them.
@@ -18,12 +18,17 @@ Usage (run from this folder):
     python3 gh_puller.py scripts    # just the script notes
 
 Requires the `gh` CLI, authenticated (`gh auth status`).
+
+Configuration:
+    Create `gh_puller.json` in this folder or set `GH_PULLER_EXTENSIONS` to add
+    or override which file extensions are mirrored and how they are labeled.
 """
 from __future__ import annotations
 
 import argparse
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -50,18 +55,162 @@ COMMIT_LIMIT = 300
 NETWORK_RETRIES = 5
 RETRY_BASE_DELAY = 3.0  # seconds
 
-# File extensions treated as "scripts" (case-insensitive).
-SCRIPT_EXTS = {".py", ".r", ".rmd", ".sh"}
+def _default_languages() -> dict[str, tuple[str, str]]:
+    """Default language extensions, labels and code-fence hints.
 
-# Language label + code-fence hint per extension. (.Rmd content is fenced as
-# literal text, so its own ```{r} chunks don't render — the fence width is
-# auto-expanded to survive them.)
-LANG = {
-    ".py": ("python", "python"),
-    ".r": ("R", "r"),
-    ".rmd": ("R Markdown", "markdown"),
-    ".sh": ("shell", "bash"),
-}
+    The set below covers the languages mentioned in the issue and many other
+    common source file types. Users can extend or override it via
+    `gh_puller.json` in this folder or the `GH_PULLER_EXTENSIONS` environment
+    variable.
+    """
+    return {
+        # Original core languages
+        ".py": ("Python", "python"),
+        ".r": ("R", "r"),
+        ".rmd": ("R Markdown", "markdown"),
+        ".sh": ("Shell", "bash"),
+        ".bash": ("Bash", "bash"),
+        ".zsh": ("Zsh", "zsh"),
+        ".fish": ("Fish", "fish"),
+        # Web
+        ".ts": ("TypeScript", "typescript"),
+        ".tsx": ("TypeScript TSX", "tsx"),
+        ".js": ("JavaScript", "javascript"),
+        ".jsx": ("JavaScript JSX", "jsx"),
+        ".mjs": ("JavaScript Module", "javascript"),
+        ".cjs": ("JavaScript CommonJS", "javascript"),
+        # Systems / compiled
+        ".rs": ("Rust", "rust"),
+        ".go": ("Go", "go"),
+        ".c": ("C", "c"),
+        ".cpp": ("C++", "cpp"),
+        ".cc": ("C++", "cpp"),
+        ".cxx": ("C++", "cpp"),
+        ".h": ("C/C++ Header", "cpp"),
+        ".hpp": ("C++ Header", "cpp"),
+        ".cs": ("C#", "csharp"),
+        ".java": ("Java", "java"),
+        ".kt": ("Kotlin", "kotlin"),
+        ".kts": ("Kotlin Script", "kotlin"),
+        ".scala": ("Scala", "scala"),
+        ".sc": ("Scala", "scala"),
+        ".swift": ("Swift", "swift"),
+        ".m": ("Objective-C", "objectivec"),
+        ".mm": ("Objective-C++", "objectivec"),
+        # Dynamic / scripting
+        ".pl": ("Perl", "perl"),
+        ".pm": ("Perl Module", "perl"),
+        ".rb": ("Ruby", "ruby"),
+        ".rake": ("Ruby Rake", "ruby"),
+        ".php": ("PHP", "php"),
+        ".lua": ("Lua", "lua"),
+        ".vim": ("Vim", "vim"),
+        ".groovy": ("Groovy", "groovy"),
+        ".gradle": ("Gradle", "groovy"),
+        # Data / infrastructure as code
+        ".tf": ("Terraform", "terraform"),
+        ".tfvars": ("Terraform Vars", "terraform"),
+        ".sql": ("SQL", "sql"),
+        ".yaml": ("YAML", "yaml"),
+        ".yml": ("YAML", "yaml"),
+    }
+
+
+def _parse_languages(d: dict) -> dict[str, tuple[str, str] | None]:
+    """Parse a user-supplied language map.
+
+    Values may be:
+      - a string label (fence becomes label.lower())
+      - a 2-tuple/list (label, fence)
+      - a dict with "label" and optional "fence"
+      - null to remove the extension from the default set
+    """
+    out: dict[str, tuple[str, str] | None] = {}
+    for raw_ext, value in d.items():
+        ext = str(raw_ext).lower().strip()
+        if not ext.startswith("."):
+            ext = "." + ext
+        if value is None:
+            out[ext] = None
+            continue
+        if isinstance(value, str):
+            out[ext] = (value, value.lower())
+        elif isinstance(value, (list, tuple)) and len(value) >= 2:
+            out[ext] = (value[0], value[1])
+        elif isinstance(value, dict):
+            label = value.get("label") or ext[1:].upper()
+            fence = value.get("fence") or label.lower()
+            out[ext] = (label, fence)
+        else:
+            out[ext] = (str(value), str(value).lower())
+    return out
+
+
+def _parse_env_extensions(value: str) -> dict[str, tuple[str, str] | None]:
+    """Parse the GH_PULLER_EXTENSIONS environment variable.
+
+    Format:  .ext:Label:fence,.ext:Label,...
+    A leading '-' before an extension (e.g. '-.py') removes it.
+    """
+    out: dict[str, tuple[str, str] | None] = {}
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.startswith("-") and "." in token:
+            ext = token[1:].lower().strip()
+            if not ext.startswith("."):
+                ext = "." + ext
+            out[ext] = None
+            continue
+        parts = [p.strip() for p in token.split(":")]
+        ext = parts[0].lower()
+        if not ext.startswith("."):
+            ext = "." + ext
+        if len(parts) == 3:
+            label, fence = parts[1], parts[2]
+        elif len(parts) == 2:
+            label = parts[1]
+            fence = label.lower()
+        elif len(parts) == 1:
+            label = ext[1:].upper()
+            fence = label.lower()
+        else:
+            continue
+        out[ext] = (label, fence)
+    return out
+
+
+def _load_languages() -> dict[str, tuple[str, str]]:
+    """Return the effective language map, merging defaults, JSON config and env."""
+    langs = _default_languages()
+    config_path = Path(os.environ.get("GH_PULLER_CONFIG", VAULT / "gh_puller.json"))
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if isinstance(cfg, dict) and "script_extensions" in cfg:
+                for ext, value in _parse_languages(cfg["script_extensions"]).items():
+                    if value is None:
+                        langs.pop(ext, None)
+                    else:
+                        langs[ext] = value
+        except Exception as e:
+            print(f"Warning: could not load {config_path}: {e}", file=sys.stderr)
+
+    env = os.environ.get("GH_PULLER_EXTENSIONS", "")
+    if env:
+        for ext, value in _parse_env_extensions(env).items():
+            if value is None:
+                langs.pop(ext, None)
+            else:
+                langs[ext] = value
+    return langs
+
+
+# Effective extension/language maps after applying user config.
+LANG = _load_languages()
+SCRIPT_EXTS = set(LANG)
 
 # Embed each repo's README into its repo note (also makes READMEs searchable
 # and filterable via Repos.base).
@@ -591,7 +740,12 @@ views:
         direction: DESC
 """
 
-SCRIPTS_BASE_CONTENT = """filters:
+def _build_scripts_base(langs: dict[str, tuple[str, str]]) -> str:
+    """Build an Obsidian Base config for the Scripts mirror.
+
+    Generates an 'All scripts' view plus one view per configured language.
+    """
+    base = """filters:
   and:
     - file.hasTag("gh/script")
 properties:
@@ -614,36 +768,32 @@ views:
     sort:
       - property: note.repo
         direction: ASC
-  - type: table
-    name: Python
+"""
+    seen: set[str] = set()
+    for ext, (label, _fence) in sorted(langs.items(),
+                                       key=lambda kv: (kv[1][0].lower(), kv[0])):
+        view_name = label
+        if view_name in seen:
+            view_name = f"{label} ({ext})"
+        seen.add(view_name)
+        base += f"""  - type: table
+    name: {view_name}
     filters:
       and:
-        - note.ext == ".py"
+        - note.ext == {json.dumps(ext)}
     order:
       - file.name
       - note.repo
-      - note.lines
-  - type: table
-    name: R
-    filters:
-      and:
-        - note.ext == ".r"
-    order:
-      - file.name
-      - note.repo
-      - note.lines
-  - type: table
-    name: Shell
-    filters:
-      and:
-        - note.ext == ".sh"
-    order:
-      - file.name
-      - note.repo
+      - note.language
       - note.lines
 """
+    return base
 
-HOME_CONTENT = """---
+
+# Base YAML is generated from the configured language set.
+SCRIPTS_BASE_CONTENT = _build_scripts_base(LANG)
+
+HOME_CONTENT = f"""---
 source: gh_puller
 ---
 # 🐙 GitHub Dashboard
@@ -654,19 +804,20 @@ Your GitHub activity, mirrored into this vault by `gh_puller`.
 
 - [[Activity]] — recent commits across every repo you touch
 - **Repos** — open [[Repos.base]] for the repo database (sortable / filterable)
-- **Scripts** — open [[Scripts.base]] to browse & search every `.py` / `.R` / `.Rmd` / `.sh`
+- **Scripts** — open [[Scripts.base]] to browse & search every source file
 
 ## Refresh
 
 Regenerate everything from a terminal:
 
 ```bash
-cd "/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller"
+cd "{VAULT}"
 python3 gh_puller.py all
 ```
 
 Or refresh one section: `activity`, `repos`, or `scripts`. It also runs
-automatically via the `com.mtisza.ghpuller` LaunchAgent (daily + at login).
+automatically if you install a scheduler — run `./setup.sh` for launchd or
+cron setup.
 
 > The `Repos/` and `Scripts/` folders and the `Activity.md` / `*.base` files are
 > fully managed by the script — edits there are overwritten on the next run.

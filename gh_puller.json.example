@@ -1,0 +1,7 @@
+{
+  "script_extensions": {
+    ".ex": {"label": "Elixir", "fence": "elixir"},
+    ".exs": {"label": "Elixir Script", "fence": "elixir"},
+    ".yml": null
+  }
+}

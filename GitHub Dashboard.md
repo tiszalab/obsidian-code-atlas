@@ -9,19 +9,20 @@ Your GitHub activity, mirrored into this vault by `gh_puller`.
 
 - [[Activity]] — recent commits across every repo you touch
 - **Repos** — open [[Repos.base]] for the repo database (sortable / filterable)
-- **Scripts** — open [[Scripts.base]] to browse & search every `.py` / `.R` / `.Rmd` / `.sh`
+- **Scripts** — open [[Scripts.base]] to browse & search every source file
 
 ## Refresh
 
 Regenerate everything from a terminal:
 
 ```bash
-cd "/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller"
+cd /path/to/your/gh_puller
 python3 gh_puller.py all
 ```
 
 Or refresh one section: `activity`, `repos`, or `scripts`. It also runs
-automatically via the `com.mtisza.ghpuller` LaunchAgent (daily + at login).
+automatically if you install a scheduler — run `./setup.sh` for launchd or
+cron setup.
 
 > The `Repos/` and `Scripts/` folders and the `Activity.md` / `*.base` files are
 > fully managed by the script — edits there are overwritten on the next run.

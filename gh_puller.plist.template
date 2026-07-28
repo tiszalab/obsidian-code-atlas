@@ -4,12 +4,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.mtisza.ghpuller</string>
+    <string>@@LABEL@@</string>
 
     <!-- What to run -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller/refresh.sh</string>
+        <string>@@BASE@@/refresh.sh</string>
         <string>all</string>
     </array>
 
@@ -29,8 +29,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller/launchd.out.log</string>
+    <string>@@BASE@@/launchd.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/michaeltisza/mike_tisza/github_repos/TiszaMike_notes/gh_puller/launchd.err.log</string>
+    <string>@@BASE@@/launchd.err.log</string>
 </dict>
 </plist>

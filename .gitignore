@@ -1,0 +1,21 @@
+# Local configuration
+gh_puller.json
+*.local.*
+
+# Scheduler logs
+refresh.log
+launchd.out.log
+launchd.err.log
+
+# Generated dashboard content
+Activity.md
+GitHub Dashboard.md
+Repos/
+Repos.base
+Scripts/
+Scripts.base
+
+# Python / test artifacts
+__pycache__/
+*.pyc
+.pytest_cache/

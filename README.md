@@ -125,7 +125,7 @@ All top-level knobs in `gh_puller.py` are in one place near the top of the file:
 ├── gh_puller.plist.template  # launchd template
 ├── crontab.example           # cron example
 ├── gh_puller.json.example    # language config example
-├── GitHub Dashboard.md       # home note (regenerated on `all`)
+├── GitHub Dashboard.md       # home note (generated on `all`, not tracked)
 ├── Activity.md               # generated
 ├── Repos/ + Repos.base       # generated
 └── Scripts/ + Scripts.base   # generated

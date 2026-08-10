@@ -4,13 +4,31 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-SPEC = importlib.util.spec_from_file_location("gh_puller", ROOT / "gh_puller.py")
-gh_puller = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(gh_puller)
+
+# gh_puller builds its language map at import time from the environment and
+# from gh_puller.json in the install folder. Both are user-owned and the JSON
+# file is gitignored, so import the module with a clean environment — otherwise
+# a developer's own config decides whether the suite passes.
+CLEAN_ENV = {
+    "GH_PULLER_EXTENSIONS": "",
+    "GH_PULLER_CONFIG": str(HERE / "no-such-config.json"),
+}
+
+
+def _import_gh_puller():
+    spec = importlib.util.spec_from_file_location("gh_puller", ROOT / "gh_puller.py")
+    module = importlib.util.module_from_spec(spec)
+    with mock.patch.dict(os.environ, CLEAN_ENV):
+        spec.loader.exec_module(module)
+    return module
+
+
+gh_puller = _import_gh_puller()
 
 
 class TestStringUtils(unittest.TestCase):
@@ -43,8 +61,11 @@ class TestStringUtils(unittest.TestCase):
 
 class TestLanguageConfig(unittest.TestCase):
     def test_default_languages_include_requested_extensions(self):
+        # Assert on the defaults, not the effective map: LANG reflects whatever
+        # config the machine running the tests happens to have.
+        defaults = gh_puller._default_languages()
         for ext in (".ts", ".tsx", ".rs", ".pl", ".go", ".rb"):
-            self.assertIn(ext, gh_puller.LANG)
+            self.assertIn(ext, defaults)
 
     def test_parse_env_extensions_adds_and_removes(self):
         env = ".ts:TypeScript:typescript,.rs:Rust,-.yml"
@@ -75,23 +96,32 @@ class TestLanguageConfig(unittest.TestCase):
                 ".yml": None,
             }
         }
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump(cfg, f)
-            f.flush()
-            cfg_path = f.name
-
-        old_env = os.environ.get("GH_PULLER_CONFIG")
-        os.environ["GH_PULLER_CONFIG"] = cfg_path
-        try:
-            langs = gh_puller._load_languages()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / "gh_puller.json"
+            cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+            env = dict(CLEAN_ENV, GH_PULLER_CONFIG=str(cfg_path))
+            with mock.patch.dict(os.environ, env):
+                langs = gh_puller._load_languages()
             self.assertEqual(langs[".ex"], ("Elixir", "elixir"))
             self.assertNotIn(".yml", langs)
-        finally:
-            if old_env is None:
-                os.environ.pop("GH_PULLER_CONFIG", None)
-            else:
-                os.environ["GH_PULLER_CONFIG"] = old_env
-            Path(cfg_path).unlink()
+
+    def test_load_languages_ignores_missing_config(self):
+        with mock.patch.dict(os.environ, CLEAN_ENV):
+            langs = gh_puller._load_languages()
+        self.assertEqual(langs, gh_puller._default_languages())
+
+    def test_env_overrides_config_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / "gh_puller.json"
+            cfg_path.write_text(
+                json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
+            env = dict(CLEAN_ENV,
+                       GH_PULLER_CONFIG=str(cfg_path),
+                       GH_PULLER_EXTENSIONS="-.ex,.zig:Zig:zig")
+            with mock.patch.dict(os.environ, env):
+                langs = gh_puller._load_languages()
+        self.assertNotIn(".ex", langs)
+        self.assertEqual(langs[".zig"], ("Zig", "zig"))
 
 
 class TestScriptsBase(unittest.TestCase):
@@ -130,6 +160,76 @@ class TestShellScripts(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0)
+
+
+FAKE_CRONTAB = """#!/bin/bash
+# Stand-in for crontab(1): reads and writes $CRONTAB_STATE instead of the
+# real user crontab.
+if [ "$1" = "-l" ]; then
+    [ -s "$CRONTAB_STATE" ] || exit 1
+    cat "$CRONTAB_STATE"
+else
+    cat "$1" > "$CRONTAB_STATE"
+fi
+"""
+
+
+class TestCronInstaller(unittest.TestCase):
+    """setup.sh --cron / --uninstall against a fake crontab binary."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmpdir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+        bindir = tmpdir / "bin"
+        bindir.mkdir()
+        fake = bindir / "crontab"
+        fake.write_text(FAKE_CRONTAB, encoding="utf-8")
+        fake.chmod(0o755)
+
+        self.state = tmpdir / "crontab.state"
+        self.state.write_text("", encoding="utf-8")
+        self.env = dict(
+            os.environ,
+            PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            CRONTAB_STATE=str(self.state),
+        )
+
+    def run_setup(self, *args):
+        result = subprocess.run(
+            ["bash", str(ROOT / "setup.sh"), *args],
+            env=self.env, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return self.state.read_text(encoding="utf-8")
+
+    def test_install_is_idempotent(self):
+        self.run_setup("--cron")
+        crontab = self.run_setup("--cron")
+        job_lines = [ln for ln in crontab.splitlines() if "refresh.sh" in ln]
+        self.assertEqual(len(job_lines), 1, crontab)
+
+    def test_uninstall_removes_the_job_not_just_the_marker(self):
+        self.run_setup("--cron")
+        crontab = self.run_setup("--uninstall")
+        self.assertNotIn("refresh.sh", crontab)
+        self.assertNotIn("gh_puller", crontab)
+
+    def test_uninstall_removes_legacy_two_line_entries(self):
+        self.state.write_text(
+            "# gh_puller auto-refresh\n"
+            f'0 8 * * * "{ROOT}/refresh.sh" all >> "{ROOT}/refresh.log" 2>&1\n',
+            encoding="utf-8",
+        )
+        crontab = self.run_setup("--uninstall")
+        self.assertNotIn("refresh.sh", crontab)
+
+    def test_unrelated_entries_are_preserved(self):
+        self.state.write_text("*/5 * * * * /usr/bin/true\n", encoding="utf-8")
+        self.run_setup("--cron")
+        crontab = self.run_setup("--uninstall")
+        self.assertIn("*/5 * * * * /usr/bin/true", crontab)
 
 
 if __name__ == "__main__":

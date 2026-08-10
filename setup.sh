@@ -64,24 +64,36 @@ uninstall_launchd() {
     fi
 }
 
+# The job is a single line ending in the marker, so one fixed-string filter
+# removes it no matter where gh_puller is installed. Trailing "# ..." is a
+# shell comment, so it does not affect the command cron runs.
+CRON_LINE="0 8 * * * \"$BASE/refresh.sh\" all >> \"$BASE/refresh.log\" 2>&1 $CRON_MARKER"
+
+# Print the current crontab with every gh_puller entry removed. Also drops
+# entries written by earlier versions, which put the marker on its own line
+# above an unmarked job line.
+strip_cron_entries() {
+    ( crontab -l 2>/dev/null || true ) \
+        | grep -vF "$CRON_MARKER" \
+        | grep -vF "$BASE/refresh.sh" \
+        || true
+}
+
 install_cron() {
     local tmp
     tmp="$(mktemp)"
-    ( crontab -l 2>/dev/null || true ) | grep -vF "$CRON_MARKER" > "$tmp" || true
-    cat >> "$tmp" <<EOF
-$CRON_MARKER
-0 8 * * * "$BASE/refresh.sh" all >> "$BASE/refresh.log" 2>&1
-EOF
+    strip_cron_entries > "$tmp"
+    printf '%s\n' "$CRON_LINE" >> "$tmp"
     crontab "$tmp"
     rm -f "$tmp"
     echo "Added cron job:"
-    echo "  0 8 * * * \"$BASE/refresh.sh\" all >> \"$BASE/refresh.log\" 2>&1"
+    echo "  $CRON_LINE"
 }
 
 uninstall_cron() {
     local tmp
     tmp="$(mktemp)"
-    ( crontab -l 2>/dev/null || true ) | grep -vF "$CRON_MARKER" > "$tmp" || true
+    strip_cron_entries > "$tmp"
     crontab "$tmp"
     rm -f "$tmp"
     echo "Removed cron job"

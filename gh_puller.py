@@ -793,7 +793,7 @@ views:
 # Base YAML is generated from the configured language set.
 SCRIPTS_BASE_CONTENT = _build_scripts_base(LANG)
 
-HOME_CONTENT = f"""---
+HOME_CONTENT = """---
 source: gh_puller
 ---
 # 🐙 GitHub Dashboard
@@ -808,11 +808,11 @@ Your GitHub activity, mirrored into this vault by `gh_puller`.
 
 ## Refresh
 
-Regenerate everything from a terminal:
+Regenerate everything from a terminal, from the `gh_puller` folder holding
+this note:
 
 ```bash
-cd "{VAULT}"
-python3 gh_puller.py all
+./refresh.sh all
 ```
 
 Or refresh one section: `activity`, `repos`, or `scripts`. It also runs

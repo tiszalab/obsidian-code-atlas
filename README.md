@@ -1,0 +1,140 @@
+# gh_puller
+
+Mirror your GitHub activity into an [Obsidian](https://obsidian.md/) vault.
+
+It generates three things from your `gh`-authenticated account:
+
+1. **Activity.md** — recent commits across every repo you touch.
+2. **Repos/** + **Repos.base** — one note per repo, browsable as an Obsidian Base database.
+3. **Scripts/** + **Scripts.base** — every source file you’ve written, as searchable notes.
+
+The generated `Repos/`, `Scripts/`, `Activity.md`, `GitHub Dashboard.md`, and `*.base` files are fully managed by the script — don’t hand-edit them.
+
+## Requirements
+
+- [GitHub CLI (`gh`)](https://cli.github.com/) installed and authenticated (`gh auth status`).
+- Python 3.10 or newer.
+
+## Quick start
+
+1. Copy or clone this folder into your Obsidian vault:
+
+   ```bash
+   git clone https://github.com/tiszalab/gh_puller.git
+   cd gh_puller
+   ```
+
+2. Make sure `gh` is authenticated:
+
+   ```bash
+   gh auth status
+   ```
+
+3. Run a one-off refresh:
+
+   ```bash
+   python3 gh_puller.py all
+   ```
+
+   Or use the wrapper script:
+
+   ```bash
+   ./refresh.sh all
+   ```
+
+The wrapper is especially handy from `cron` or `launchd`, where `PATH` is minimal.
+
+## Scheduling
+
+### macOS launchd
+
+```bash
+./setup.sh --launchd
+```
+
+This installs a LaunchAgent that runs `refresh.sh all` every day at 08:00 and whenever you log in. Logs are written to `launchd.out.log` and `launchd.err.log` in the install directory.
+
+### cron
+
+```bash
+./setup.sh --cron
+```
+
+This appends a daily 08:00 job to your user crontab. Logs are written to `refresh.log`.
+
+### Manual examples
+
+- `crontab.example` shows a cron line you can paste yourself.
+- `gh_puller.plist.template` is the launchd template used by `setup.sh`; edit and install manually if you prefer.
+
+To remove the scheduler:
+
+```bash
+./setup.sh --uninstall
+```
+
+## Configuring language support
+
+The script mirrors a wide set of source-file extensions by default, including TypeScript, Rust, Perl, Go, Ruby, Java, Kotlin, and more.
+
+You can add, override, or remove extensions in two ways:
+
+### 1. `gh_puller.json` in the install folder
+
+Copy `gh_puller.json.example` to `gh_puller.json` and edit it:
+
+```json
+{
+  "script_extensions": {
+    ".ex": {"label": "Elixir", "fence": "elixir"},
+    ".exs": {"label": "Elixir Script", "fence": "elixir"},
+    ".yml": null
+  }
+}
+```
+
+A value of `null` removes that extension from the default set. The `fence` is the Obsidian code-block language hint (e.g. `python`, `rust`, `typescript`).
+
+### 2. `GH_PULLER_EXTENSIONS` environment variable
+
+Useful for one-off overrides or Docker:
+
+```bash
+GH_PULLER_EXTENSIONS=".ex:Elixir:elixir,.exs:Elixir:elixir,-.yml" \
+  python3 gh_puller.py all
+```
+
+Format: `.ext:Label:fence`. Two parts (`.ext:Label`) are allowed; one part (`.ext`) will auto-generate a label. A leading `-` removes an extension.
+
+## Customization
+
+All top-level knobs in `gh_puller.py` are in one place near the top of the file:
+
+- `COMMIT_LIMIT` — commits to pull for Activity.md.
+- `MIRROR_OWNED_AND_ORGS_ONLY` — whether to mirror scripts from repos outside your own/orgs.
+- `MAX_SCRIPTS_PER_REPO` — safety cap per repo.
+- `EMBED_READMES`, `MAX_README_BYTES`, `MAX_SCRIPT_BYTES`, etc.
+
+## File layout
+
+```
+.
+├── gh_puller.py              # main script
+├── refresh.sh                # scheduler-friendly wrapper
+├── setup.sh                  # launchd / cron installer
+├── gh_puller.plist.template  # launchd template
+├── crontab.example           # cron example
+├── gh_puller.json.example    # language config example
+├── GitHub Dashboard.md       # home note (generated on `all`, not tracked)
+├── Activity.md               # generated
+├── Repos/ + Repos.base       # generated
+└── Scripts/ + Scripts.base   # generated
+```
+
+## Uninstall
+
+```bash
+./setup.sh --uninstall
+```
+
+Then simply delete the `gh_puller` folder. None of the generated files need to be preserved.

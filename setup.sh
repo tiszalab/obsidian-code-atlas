@@ -3,10 +3,17 @@
 # Supports macOS launchd and Unix cron.
 set -euo pipefail
 
-BASE="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="${GH_PULLER_PYTHON:-python3}"
+# Resolve this script's directory, following symlinks, so the install directory
+# is correct even when setup.sh is invoked via a symlink.
+BASE="$($PYTHON -c 'import os, sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "$0")"
 NAME="gh_puller"
-LABEL="com.ghpuller.${NAME}"
 PLIST_TEMPLATE="$BASE/gh_puller.plist.template"
+
+# Derive the LaunchAgent label from the install path so two vaults on the same
+# Mac do not silently overwrite each other's LaunchAgent.
+HASH=$("$PYTHON" -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$BASE")
+LABEL="com.ghpuller.${NAME}.${HASH}"
 PLIST_PATH="$HOME/Library/LaunchAgents/${LABEL}.plist"
 CRON_MARKER="# gh_puller auto-refresh"
 
@@ -35,14 +42,14 @@ install_launchd() {
     fi
 
     mkdir -p "$HOME/Library/LaunchAgents"
-    PYTHON="${GH_PULLER_PYTHON:-python3}"
     "$PYTHON" - "$BASE" "$LABEL" "$PLIST_TEMPLATE" "$PLIST_PATH" <<'PY'
 import pathlib
 import sys
+from xml.sax.saxutils import escape
 
 base, label, template_path, out_path = sys.argv[1:5]
 tmpl = pathlib.Path(template_path).read_text()
-out = tmpl.replace("@@BASE@@", base).replace("@@LABEL@@", label)
+out = tmpl.replace("@@BASE@@", escape(base)).replace("@@LABEL@@", escape(label))
 pathlib.Path(out_path).write_text(out)
 PY
     chmod 644 "$PLIST_PATH"
@@ -67,7 +74,7 @@ uninstall_launchd() {
 # The job is a single line ending in the marker, so one fixed-string filter
 # removes it no matter where gh_puller is installed. Trailing "# ..." is a
 # shell comment, so it does not affect the command cron runs.
-CRON_LINE="0 8 * * * \"$BASE/refresh.sh\" all >> \"$BASE/refresh.log\" 2>&1 $CRON_MARKER"
+CRON_LINE="0 8 * * * \"$BASE/refresh.sh\" all $CRON_MARKER"
 
 # Print the current crontab with every gh_puller entry removed. Also drops
 # entries written by earlier versions, which put the marker on its own line

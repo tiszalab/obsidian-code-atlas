@@ -39,6 +39,12 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+# ─────────────────────────── version check ────────────────────────────
+
+if sys.version_info < (3, 9):
+    print("gh_puller requires Python 3.9 or newer", file=sys.stderr)
+    sys.exit(1)
+
 # ─────────────────────────── configuration ────────────────────────────
 
 # All output is written into this script's own folder, so the dashboard is a
@@ -86,7 +92,6 @@ def _default_languages() -> dict[str, tuple[str, str]]:
         ".cpp": ("C++", "cpp"),
         ".cc": ("C++", "cpp"),
         ".cxx": ("C++", "cpp"),
-        ".h": ("C/C++ Header", "cpp"),
         ".hpp": ("C++ Header", "cpp"),
         ".cs": ("C#", "csharp"),
         ".java": ("Java", "java"),
@@ -95,7 +100,7 @@ def _default_languages() -> dict[str, tuple[str, str]]:
         ".scala": ("Scala", "scala"),
         ".sc": ("Scala", "scala"),
         ".swift": ("Swift", "swift"),
-        ".m": ("Objective-C", "objectivec"),
+        ".m": ("MATLAB", "matlab"),
         ".mm": ("Objective-C++", "objectivec"),
         # Dynamic / scripting
         ".pl": ("Perl", "perl"),
@@ -107,12 +112,6 @@ def _default_languages() -> dict[str, tuple[str, str]]:
         ".vim": ("Vim", "vim"),
         ".groovy": ("Groovy", "groovy"),
         ".gradle": ("Gradle", "groovy"),
-        # Data / infrastructure as code
-        ".tf": ("Terraform", "terraform"),
-        ".tfvars": ("Terraform Vars", "terraform"),
-        ".sql": ("SQL", "sql"),
-        ".yaml": ("YAML", "yaml"),
-        ".yml": ("YAML", "yaml"),
     }
 
 
@@ -137,6 +136,8 @@ def _parse_languages(d: dict) -> dict[str, tuple[str, str] | None]:
             out[ext] = (value, value.lower())
         elif isinstance(value, (list, tuple)) and len(value) >= 2:
             out[ext] = (value[0], value[1])
+        elif isinstance(value, (list, tuple)) and len(value) == 1:
+            out[ext] = (str(value[0]), str(value[0]).lower())
         elif isinstance(value, dict):
             label = value.get("label") or ext[1:].upper()
             fence = value.get("fence") or label.lower()
@@ -155,7 +156,7 @@ def _parse_env_extensions(value: str) -> dict[str, tuple[str, str] | None]:
     out: dict[str, tuple[str, str] | None] = {}
     for token in value.split(","):
         token = token.strip()
-        if not token:
+        if not token or token == "-":
             continue
         if token.startswith("-") and "." in token:
             ext = token[1:].lower().strip()
@@ -615,17 +616,9 @@ def build_scripts(repos: dict[str, dict]) -> None:
             print(f"  ! bad tarball for {full}: {e}")
             continue
 
-        # Guard against unexpectedly huge repos before writing anything.
-        n_matching = sum(
-            1 for m in tf.getmembers() if m.isfile()
-            and Path(m.name.split("/", 1)[-1]).suffix.lower() in SCRIPT_EXTS
-        )
-        if n_matching > MAX_SCRIPTS_PER_REPO:
-            print(f"  ! {full} has {n_matching} script files "
-                  f"(> {MAX_SCRIPTS_PER_REPO} cap) — skipping")
-            tf.close()
-            continue
-
+        # Collect matching candidates, then sort and truncate to the safety cap
+        # instead of skipping the whole repo.
+        candidates = []
         for member in tf.getmembers():
             if not member.isfile():
                 continue
@@ -641,6 +634,15 @@ def build_scripts(repos: dict[str, dict]) -> None:
                 continue
             if member.size > MAX_SCRIPT_BYTES:
                 continue
+            candidates.append((rel, ext, member))
+
+        n_matching = len(candidates)
+        if n_matching > MAX_SCRIPTS_PER_REPO:
+            print(f"  ! {full} has {n_matching} script files "
+                  f"(> {MAX_SCRIPTS_PER_REPO} cap) — truncating")
+            candidates = sorted(candidates, key=lambda x: x[0])[:MAX_SCRIPTS_PER_REPO]
+
+        for rel, ext, member in candidates:
             f = tf.extractfile(member)
             if f is None:
                 continue
@@ -744,6 +746,8 @@ def _build_scripts_base(langs: dict[str, tuple[str, str]]) -> str:
     """Build an Obsidian Base config for the Scripts mirror.
 
     Generates an 'All scripts' view plus one view per configured language.
+    Languages that map to multiple extensions are grouped into a single view
+    with an 'or' filter over those extensions.
     """
     base = """filters:
   and:
@@ -759,7 +763,7 @@ properties:
     displayName: Path
 views:
   - type: table
-    name: All scripts
+    name: "All scripts"
     order:
       - file.name
       - note.repo
@@ -769,18 +773,23 @@ views:
       - property: note.repo
         direction: ASC
 """
-    seen: set[str] = set()
+    groups: dict[str, list[str]] = defaultdict(list)
     for ext, (label, _fence) in sorted(langs.items(),
                                        key=lambda kv: (kv[1][0].lower(), kv[0])):
+        groups[label].append(ext)
+
+    for label in sorted(groups, key=str.lower):
+        exts = sorted(groups[label])
         view_name = label
-        if view_name in seen:
-            view_name = f"{label} ({ext})"
-        seen.add(view_name)
+        filter_kind = "or" if len(exts) > 1 else "and"
+        filters = "\n".join(
+            f"        - note.ext == {json.dumps(e)}" for e in exts
+        )
         base += f"""  - type: table
-    name: {view_name}
+    name: {json.dumps(view_name)}
     filters:
-      and:
-        - note.ext == {json.dumps(ext)}
+      {filter_kind}:
+{filters}
     order:
       - file.name
       - note.repo

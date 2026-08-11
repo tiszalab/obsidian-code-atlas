@@ -1,6 +1,5 @@
 # Local configuration
 gh_puller.json
-*.local.*
 
 # Scheduler logs
 refresh.log

@@ -123,6 +123,23 @@ class TestLanguageConfig(unittest.TestCase):
         self.assertNotIn(".ex", langs)
         self.assertEqual(langs[".zig"], ("Zig", "zig"))
 
+    def test_default_languages_drops_data_and_iac_extensions(self):
+        defaults = gh_puller._default_languages()
+        for ext in (".yaml", ".yml", ".sql", ".tf", ".tfvars", ".h"):
+            self.assertNotIn(ext, defaults)
+
+    def test_default_languages_m_is_matlab(self):
+        self.assertEqual(gh_puller._default_languages()[".m"], ("MATLAB", "matlab"))
+
+    def test_parse_languages_one_element_list(self):
+        out = gh_puller._parse_languages({".ex": ["Elixir"]})
+        self.assertEqual(out[".ex"], ("Elixir", "elixir"))
+
+    def test_parse_env_extensions_ignores_bare_dash(self):
+        out = gh_puller._parse_env_extensions("-.py,-")
+        self.assertIsNone(out[".py"])
+        self.assertNotIn(".-", out)
+
 
 class TestScriptsBase(unittest.TestCase):
     def test_build_scripts_base_contains_views(self):
@@ -131,19 +148,29 @@ class TestScriptsBase(unittest.TestCase):
             ".rs": ("Rust", "rust"),
         })
         self.assertIn("All scripts", base)
-        self.assertIn('name: Python', base)
+        self.assertIn('name: "Python"', base)
         self.assertIn('note.ext == ".py"', base)
-        self.assertIn('name: Rust', base)
+        self.assertIn('name: "Rust"', base)
         self.assertIn('note.ext == ".rs"', base)
 
-    def test_build_scripts_base_avoids_duplicate_view_names(self):
+    def test_build_scripts_base_groups_languages(self):
         base = gh_puller._build_scripts_base({
             ".pl": ("Perl", "perl"),
             ".pm": ("Perl", "perl"),
         })
-        # One gets the bare label, the second gets the extension in parentheses.
-        self.assertIn("name: Perl", base)
-        self.assertIn("name: Perl (.pm)", base)
+        # A single view per language, with an "or" filter across its extensions.
+        self.assertIn('name: "Perl"', base)
+        self.assertIn('note.ext == ".pl"', base)
+        self.assertIn('note.ext == ".pm"', base)
+        self.assertIn("or:", base)
+        # No (.ext) disambiguation suffix is needed.
+        self.assertNotIn("name: Perl (", base)
+
+    def test_build_scripts_base_quotes_view_names(self):
+        base = gh_puller._build_scripts_base({
+            ".ex": ("Elixir: Foo", "elixir"),
+        })
+        self.assertIn('name: "Elixir: Foo"', base)
 
 
 class TestShellScripts(unittest.TestCase):

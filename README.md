@@ -13,7 +13,7 @@ The generated `Repos/`, `Scripts/`, `Activity.md`, `GitHub Dashboard.md`, and `*
 ## Requirements
 
 - [GitHub CLI (`gh`)](https://cli.github.com/) installed and authenticated (`gh auth status`).
-- Python 3.10 or newer.
+- Python 3.9 or newer.
 
 ## Quick start
 
@@ -43,6 +43,8 @@ The generated `Repos/`, `Scripts/`, `Activity.md`, `GitHub Dashboard.md`, and `*
    ```
 
 The wrapper is especially handy from `cron` or `launchd`, where `PATH` is minimal.
+
+Set `GH_PULLER_PYTHON` (e.g. `GH_PULLER_PYTHON=/opt/homebrew/bin/python3`) to override which interpreter `refresh.sh` and `setup.sh` use.
 
 ## Scheduling
 

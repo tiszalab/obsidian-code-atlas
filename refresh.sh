@@ -5,14 +5,17 @@
 set -euo pipefail
 
 # gh is commonly installed via Homebrew (Apple Silicon or Intel) or at the
-# system level. Add those locations before the existing PATH.
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-
-# Resolve this script's directory so the wrapper works wherever it is installed.
-BASE="$(cd "$(dirname "$0")" && pwd)"
+# system level. Add those locations around the existing PATH so the caller's
+# preferred Python (e.g. pyenv/conda) stays ahead of the system interpreter,
+# while still having a fallback for minimal cron/launchd environments.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Use the python3 found on PATH, or let the user override with an env variable.
 PYTHON="${GH_PULLER_PYTHON:-python3}"
+
+# Resolve this script's directory, following symlinks, so the wrapper works
+# wherever it is installed and even if it is invoked via a symlink.
+BASE="$(cd -- "$( dirname -- "$($PYTHON -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0" )" )" && pwd )"
 LOG="$BASE/refresh.log"
 
 cd "$BASE"

@@ -10,11 +10,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
-# gh_puller builds its language map at import time from the environment and
-# from gh_puller.json in the install folder. Both are user-owned and the JSON
-# file is gitignored, so import the module with a clean environment — otherwise
-# a developer's own config decides whether the suite passes.
+# The compatibility entry point builds its language map at import time from
+# the environment and from the install-folder config. Both are user-owned and
+# the JSON files are gitignored, so import the module with a clean environment
+# — otherwise a developer's own config decides whether the suite passes.
 CLEAN_ENV = {
+    "OBSIDIAN_CODE_ATLAS_EXTENSIONS": "",
+    "OBSIDIAN_CODE_ATLAS_CONFIG": "",
     "GH_PULLER_EXTENSIONS": "",
     "GH_PULLER_CONFIG": str(HERE / "no-such-config.json"),
 }
@@ -97,13 +99,24 @@ class TestLanguageConfig(unittest.TestCase):
             }
         }
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg_path = Path(tmpdir) / "gh_puller.json"
+            cfg_path = Path(tmpdir) / "obsidian-code-atlas.json"
             cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
-            env = dict(CLEAN_ENV, GH_PULLER_CONFIG=str(cfg_path))
+            env = dict(CLEAN_ENV, OBSIDIAN_CODE_ATLAS_CONFIG=str(cfg_path))
             with mock.patch.dict(os.environ, env):
                 langs = gh_puller._load_languages()
             self.assertEqual(langs[".ex"], ("Elixir", "elixir"))
             self.assertNotIn(".yml", langs)
+
+    def test_load_languages_accepts_legacy_config_name(self):
+        cfg = {"script_extensions": {".ex": "Elixir"}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / "gh_puller.json"
+            cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+            env = dict(CLEAN_ENV, GH_PULLER_CONFIG="")
+            with mock.patch.object(gh_puller, "VAULT", Path(tmpdir)):
+                with mock.patch.dict(os.environ, env):
+                    langs = gh_puller._load_languages()
+            self.assertEqual(langs[".ex"], ("Elixir", "elixir"))
 
     def test_load_languages_ignores_missing_config(self):
         with mock.patch.dict(os.environ, CLEAN_ENV):
@@ -122,6 +135,17 @@ class TestLanguageConfig(unittest.TestCase):
                 langs = gh_puller._load_languages()
         self.assertNotIn(".ex", langs)
         self.assertEqual(langs[".zig"], ("Zig", "zig"))
+
+    def test_new_env_name_takes_precedence(self):
+        env = dict(
+            CLEAN_ENV,
+            OBSIDIAN_CODE_ATLAS_EXTENSIONS=".zig:Zig:zig",
+            GH_PULLER_EXTENSIONS=".ex:Elixir:elixir",
+        )
+        with mock.patch.dict(os.environ, env):
+            langs = gh_puller._load_languages()
+        self.assertIn(".zig", langs)
+        self.assertNotIn(".ex", langs)
 
     def test_default_languages_drops_data_and_iac_extensions(self):
         defaults = gh_puller._default_languages()
@@ -236,17 +260,20 @@ class TestCronInstaller(unittest.TestCase):
         crontab = self.run_setup("--cron")
         job_lines = [ln for ln in crontab.splitlines() if "refresh.sh" in ln]
         self.assertEqual(len(job_lines), 1, crontab)
+        self.assertIn("# obsidian-code-atlas auto-refresh", crontab)
 
     def test_uninstall_removes_the_job_not_just_the_marker(self):
         self.run_setup("--cron")
         crontab = self.run_setup("--uninstall")
         self.assertNotIn("refresh.sh", crontab)
         self.assertNotIn("gh_puller", crontab)
+        self.assertNotIn("obsidian-code-atlas", crontab)
 
     def test_uninstall_removes_legacy_two_line_entries(self):
         self.state.write_text(
             "# gh_puller auto-refresh\n"
-            f'0 8 * * * "{ROOT}/refresh.sh" all >> "{ROOT}/refresh.log" 2>&1\n',
+            '0 8 * * * "/old/gh_puller/refresh.sh" all >> '
+            '"/old/gh_puller/refresh.log" 2>&1\n',
             encoding="utf-8",
         )
         crontab = self.run_setup("--uninstall")

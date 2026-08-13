@@ -1,4 +1,4 @@
-# gh_puller
+# Obsidian Code Atlas
 
 Mirror your GitHub activity into an [Obsidian](https://obsidian.md/) vault.
 
@@ -20,8 +20,8 @@ The generated `Repos/`, `Scripts/`, `Activity.md`, `GitHub Dashboard.md`, and `*
 1. Copy or clone this folder into your Obsidian vault:
 
    ```bash
-   git clone https://github.com/tiszalab/gh_puller.git
-   cd gh_puller
+   git clone https://github.com/tiszalab/obsidian-code-atlas.git
+   cd obsidian-code-atlas
    ```
 
 2. Make sure `gh` is authenticated:
@@ -36,6 +36,8 @@ The generated `Repos/`, `Scripts/`, `Activity.md`, `GitHub Dashboard.md`, and `*
    python3 gh_puller.py all
    ```
 
+   `gh_puller.py` remains the compatibility entry point for existing installs and scripts. The repository and tool are now named **Obsidian Code Atlas**.
+
    Or use the wrapper script:
 
    ```bash
@@ -44,7 +46,7 @@ The generated `Repos/`, `Scripts/`, `Activity.md`, `GitHub Dashboard.md`, and `*
 
 The wrapper is especially handy from `cron` or `launchd`, where `PATH` is minimal.
 
-Set `GH_PULLER_PYTHON` (e.g. `GH_PULLER_PYTHON=/opt/homebrew/bin/python3`) to override which interpreter `refresh.sh` and `setup.sh` use.
+Set `OBSIDIAN_CODE_ATLAS_PYTHON` (for example, `OBSIDIAN_CODE_ATLAS_PYTHON=/opt/homebrew/bin/python3`) to override which interpreter `refresh.sh` and `setup.sh` use. The legacy `GH_PULLER_PYTHON` variable is still accepted.
 
 ## Scheduling
 
@@ -67,7 +69,7 @@ This appends a daily 08:00 job to your user crontab. Logs are written to `refres
 ### Manual examples
 
 - `crontab.example` shows a cron line you can paste yourself.
-- `gh_puller.plist.template` is the launchd template used by `setup.sh`; edit and install manually if you prefer.
+- `obsidian-code-atlas.plist.template` is the launchd template used by `setup.sh`; edit and install manually if you prefer.
 
 To remove the scheduler:
 
@@ -81,9 +83,9 @@ The script mirrors a wide set of source-file extensions by default, including Ty
 
 You can add, override, or remove extensions in two ways:
 
-### 1. `gh_puller.json` in the install folder
+### 1. `obsidian-code-atlas.json` in the install folder
 
-Copy `gh_puller.json.example` to `gh_puller.json` and edit it:
+Copy `obsidian-code-atlas.json.example` to `obsidian-code-atlas.json` and edit it:
 
 ```json
 {
@@ -95,18 +97,18 @@ Copy `gh_puller.json.example` to `gh_puller.json` and edit it:
 }
 ```
 
-A value of `null` removes that extension from the default set. The `fence` is the Obsidian code-block language hint (e.g. `python`, `rust`, `typescript`).
+A value of `null` removes that extension from the default set. The `fence` is the Obsidian code-block language hint (e.g. `python`, `rust`, `typescript`). Existing `gh_puller.json` files continue to work when the new config file is absent. `OBSIDIAN_CODE_ATLAS_CONFIG` can point to a config file explicitly; the legacy `GH_PULLER_CONFIG` variable is also accepted.
 
-### 2. `GH_PULLER_EXTENSIONS` environment variable
+### 2. `OBSIDIAN_CODE_ATLAS_EXTENSIONS` environment variable
 
 Useful for one-off overrides or Docker:
 
 ```bash
-GH_PULLER_EXTENSIONS=".ex:Elixir:elixir,.exs:Elixir:elixir,-.yml" \
+OBSIDIAN_CODE_ATLAS_EXTENSIONS=".ex:Elixir:elixir,.exs:Elixir:elixir,-.yml" \
   python3 gh_puller.py all
 ```
 
-Format: `.ext:Label:fence`. Two parts (`.ext:Label`) are allowed; one part (`.ext`) will auto-generate a label. A leading `-` removes an extension.
+The legacy `GH_PULLER_EXTENSIONS` variable remains supported. Format: `.ext:Label:fence`. Two parts (`.ext:Label`) are allowed; one part (`.ext`) will auto-generate a label. A leading `-` removes an extension.
 
 ## Customization
 
@@ -121,16 +123,16 @@ All top-level knobs in `gh_puller.py` are in one place near the top of the file:
 
 ```
 .
-├── gh_puller.py              # main script
-├── refresh.sh                # scheduler-friendly wrapper
-├── setup.sh                  # launchd / cron installer
-├── gh_puller.plist.template  # launchd template
-├── crontab.example           # cron example
-├── gh_puller.json.example    # language config example
-├── GitHub Dashboard.md       # home note (generated on `all`, not tracked)
-├── Activity.md               # generated
-├── Repos/ + Repos.base       # generated
-└── Scripts/ + Scripts.base   # generated
+├── gh_puller.py                  # compatibility-preserved main script
+├── refresh.sh                    # scheduler-friendly wrapper
+├── setup.sh                      # launchd / cron installer
+├── obsidian-code-atlas.plist.template
+├── crontab.example               # cron example
+├── obsidian-code-atlas.json.example
+├── GitHub Dashboard.md           # home note (generated on `all`, not tracked)
+├── Activity.md                   # generated
+├── Repos/ + Repos.base            # generated
+└── Scripts/ + Scripts.base       # generated
 ```
 
 ## Uninstall
@@ -139,4 +141,4 @@ All top-level knobs in `gh_puller.py` are in one place near the top of the file:
 ./setup.sh --uninstall
 ```
 
-Then simply delete the `gh_puller` folder. None of the generated files need to be preserved.
+Then simply delete the `obsidian-code-atlas` folder. None of the generated files need to be preserved.

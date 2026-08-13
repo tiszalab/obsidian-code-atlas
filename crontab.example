@@ -1,3 +1,3 @@
-# Example cron job for gh_puller.
+# Example cron job for Obsidian Code Atlas.
 # Replace /path/to/your/install with the actual directory, then run `crontab -`.
 0 8 * * * /path/to/your/install/refresh.sh all

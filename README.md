@@ -30,7 +30,7 @@ For an isolated command-line installation, use pipx:
 pipx install ./obsidian-code-atlas
 ```
 
-Development checkouts can instead use the compatibility scripts described below.
+Development checkouts can temporarily use the deprecated compatibility scripts described below.
 
 ## CLI
 
@@ -52,28 +52,36 @@ python3 -m obsidian_code_atlas --version
 python3 -m obsidian_code_atlas refresh all --output "/path/to/My Vault/Code Atlas"
 ```
 
+## Scheduling
+
+Installed-package users can manage a daily 08:00 refresh without depending on repository scripts:
+
+```bash
+obsidian-code-atlas scheduler install --launchd --output "/path/to/My Vault/Code Atlas"  # macOS
+obsidian-code-atlas scheduler install --cron --output "/path/to/My Vault/Code Atlas"     # Unix cron
+obsidian-code-atlas scheduler status --output "/path/to/My Vault/Code Atlas"
+obsidian-code-atlas scheduler uninstall --output "/path/to/My Vault/Code Atlas"
+```
+
+Pass `--config PATH` to `scheduler install` to preserve an explicit configuration path in the scheduled command. The generated job uses the absolute interpreter running Obsidian Code Atlas, `refresh all`, and the absolute output path. Different output directories receive different identifiers, so multiple vaults can coexist. `--launchd` is rejected outside macOS with a recommendation to use cron.
+
+launchd runs both at login and daily at 08:00. Cron runs daily at 08:00. Cron output is appended to `refresh.log` in the selected output directory; launchd writes `launchd.out.log` and `launchd.err.log` there. The install command creates the output directory before scheduling the first run.
+
+`scheduler status` prints the expected identifier, installed scheduler types, schedule, and command. It returns status 1 when neither matching job is installed and 0 when at least one is found. Uninstall removes only jobs belonging to the selected output directory.
+
 ## Development-checkout compatibility
 
-From a repository checkout, the legacy command still writes to the repository directory and delegates to package code:
+From a repository checkout, the legacy commands still write to the repository directory:
 
 ```bash
 python3 gh_puller.py all
 ./refresh.sh all
-```
-
-`refresh.sh` is especially handy from `cron` or `launchd`, where `PATH` is minimal. Set `OBSIDIAN_CODE_ATLAS_PYTHON` to override its Python interpreter; the legacy `GH_PULLER_PYTHON` variable is still accepted.
-
-## Scheduling
-
-A checkout includes the existing scheduler helpers:
-
-```bash
-./setup.sh --launchd  # macOS
-./setup.sh --cron     # Unix cron
+./setup.sh --launchd
+./setup.sh --cron
 ./setup.sh --uninstall
 ```
 
-The launchd and cron jobs run `refresh.sh all` every day at 08:00. See `crontab.example` and `obsidian-code-atlas.plist.template` for manual setup.
+These checkout-only scheduler helpers, `crontab.example`, and `obsidian-code-atlas.plist.template` are deprecated compatibility paths. New installations should use `obsidian-code-atlas scheduler`; the shell files will be removed in a later migration. Set `OBSIDIAN_CODE_ATLAS_PYTHON` to override the compatibility scripts' Python interpreter; the legacy `GH_PULLER_PYTHON` variable is still accepted.
 
 ## Configuring language support
 
@@ -123,4 +131,4 @@ The legacy `GH_PULLER_EXTENSIONS` name is supported. Format is `.ext:Label:fence
 
 ## Uninstall
 
-Run `./setup.sh --uninstall` before deleting a scheduled checkout. Remove a pipx installation with `pipx uninstall obsidian-code-atlas`, or uninstall a pip installation with `python3 -m pip uninstall obsidian-code-atlas`.
+Run `obsidian-code-atlas scheduler uninstall --output PATH` before removing an installed package. For a legacy scheduled checkout, run `./setup.sh --uninstall` before deleting it. Remove a pipx installation with `pipx uninstall obsidian-code-atlas`, or uninstall a pip installation with `python3 -m pip uninstall obsidian-code-atlas`.

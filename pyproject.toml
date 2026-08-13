@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-code-atlas"
+version = "0.2.0"
+description = "Mirror GitHub activity into an Obsidian vault"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Michael Tisza"}]
+dependencies = []
+
+[project.scripts]
+obsidian-code-atlas = "obsidian_code_atlas.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

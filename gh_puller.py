@@ -2,6 +2,7 @@
 """Legacy checkout wrapper for Obsidian Code Atlas."""
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -14,8 +15,12 @@ from obsidian_code_atlas.cli import main as package_main  # noqa: E402
 
 
 def main() -> int:
-    section = sys.argv[1] if len(sys.argv) > 1 else "all"
-    return package_main(["refresh", section, "--output", str(_REPOSITORY_DIR)])
+    parser = argparse.ArgumentParser(description="Mirror GitHub activity into Obsidian.")
+    parser.add_argument("command", choices=["all", "activity", "repos", "scripts"])
+    parser.add_argument("--config", help="JSON configuration file")
+    arguments = sys.argv[1:]
+    parser.parse_args(arguments)
+    return package_main(["refresh", *arguments, "--output", str(_REPOSITORY_DIR)])
 
 
 if __name__ == "__main__":

@@ -107,7 +107,7 @@ def _parse_env_extensions(value: str) -> Dict[str, Optional[Tuple[str, str]]]:
 def select_config_path(output: Path, explicit: Optional[str], env: Mapping[str, str]) -> Optional[Path]:
     """Select configuration using the documented precedence."""
     configured = explicit if explicit is not None else (
-        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG")
+        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG") or None
     )
     if configured is not None:
         return Path(configured).expanduser().resolve()
@@ -123,11 +123,16 @@ def load_languages(output: Path, explicit_config: Optional[str] = None,
     environment = os.environ if env is None else env
     langs = _default_languages()
     config_path = select_config_path(output, explicit_config, environment)
-    if config_path is not None and config_path.exists():
+    if config_path is not None:
+        if not config_path.is_file():
+            raise FileNotFoundError("configuration file does not exist or is not a file: {}".format(config_path))
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(config, dict) and isinstance(config.get("script_extensions"), dict):
-                for ext, value in _parse_languages(config["script_extensions"]).items():
+            if isinstance(config, dict) and "script_extensions" in config:
+                extensions = config["script_extensions"]
+                if not isinstance(extensions, dict):
+                    raise ValueError("script_extensions must be a JSON object")
+                for ext, value in _parse_languages(extensions).items():
                     if value is None:
                         langs.pop(ext, None)
                     else:
@@ -145,6 +150,10 @@ def load_languages(output: Path, explicit_config: Optional[str] = None,
     return langs
 
 
+class ManagedPathError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class Context:
     output: Path
@@ -155,7 +164,7 @@ class Context:
         try:
             candidate.relative_to(self.output)
         except ValueError:
-            raise ValueError("managed path escapes output directory: {}".format(candidate))
+            raise ManagedPathError("managed path escapes output directory: {}".format(candidate))
         return candidate
 
 
@@ -666,5 +675,13 @@ def main(argv: Optional[List[str]] = None, env: Optional[Mapping[str, str]] = No
         parser.error("cannot create output directory {}: {}".format(output, exc))
     if not output.is_dir():
         parser.error("output path is not a directory: {}".format(output))
-    context = Context(output=output, languages=load_languages(output, args.config, environment))
-    return refresh(context, args.section)
+    try:
+        languages = load_languages(output, args.config, environment)
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    context = Context(output=output, languages=languages)
+    try:
+        return refresh(context, args.section)
+    except ManagedPathError as exc:
+        print("Cannot write generated files: {}".format(exc), file=sys.stderr)
+        return 1

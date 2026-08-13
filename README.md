@@ -77,7 +77,7 @@ The launchd and cron jobs run `refresh.sh all` every day at 08:00. See `crontab.
 
 ## Configuring language support
 
-Copy `obsidian-code-atlas.json.example` into the output directory and edit its `script_extensions` map:
+Create `obsidian-code-atlas.json` in the output directory using this structure (repository checkouts also include `obsidian-code-atlas.json.example`):
 
 ```json
 {

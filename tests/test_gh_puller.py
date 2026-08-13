@@ -94,11 +94,33 @@ class TestLanguageConfig(unittest.TestCase):
                 json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
             self.assertEqual(cli.load_languages(output, env={})[".ex"], ("Elixir", "elixir"))
 
-    def test_load_languages_ignores_missing_config(self):
+    def test_load_languages_rejects_missing_selected_config(self):
         with tempfile.TemporaryDirectory() as temporary:
-            languages = cli.load_languages(
-                Path(temporary), str(Path(temporary) / "missing.json"), {})
+            missing = Path(temporary) / "missing.json"
+            with self.assertRaisesRegex(FileNotFoundError, "configuration file"):
+                cli.load_languages(Path(temporary), str(missing), {})
+
+    def test_empty_config_environment_uses_output_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "obsidian-code-atlas.json").write_text(
+                json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
+            languages = cli.load_languages(output, env={
+                "OBSIDIAN_CODE_ATLAS_CONFIG": "",
+                "GH_PULLER_CONFIG": "",
+            })
+        self.assertEqual(languages[".ex"], ("Elixir", "elixir"))
+
+    def test_malformed_script_extensions_warns(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            config = output / "config.json"
+            config.write_text(json.dumps({"script_extensions": []}), encoding="utf-8")
+            with mock.patch("sys.stderr") as stderr:
+                languages = cli.load_languages(output, str(config), {})
         self.assertEqual(languages, cli._default_languages())
+        self.assertIn("script_extensions must be a JSON object",
+                      "".join(call.args[0] for call in stderr.write.call_args_list))
 
     def test_extension_env_overrides_selected_config(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -180,6 +202,16 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("output directory is required", "".join(call.args[0] for call in stderr.write.call_args_list))
 
+    def test_missing_explicit_config_is_clear_nonzero(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             self.assertRaises(SystemExit) as raised, \
+             mock.patch("sys.stderr") as stderr:
+            cli.main(["refresh", "activity", "--output", temporary,
+                      "--config", str(Path(temporary) / "missing.json")], env={})
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("configuration file does not exist",
+                      "".join(call.args[0] for call in stderr.write.call_args_list))
+
     def test_explicit_output_precedes_environment_and_supports_spaces(self):
         with tempfile.TemporaryDirectory() as temporary:
             explicit = Path(temporary) / "explicit output with spaces"
@@ -207,6 +239,22 @@ class TestCLI(unittest.TestCase):
                 context.path("..", "escaped.md")
         self.assertIsNone(cli._safe_archive_relative("root/../escaped.py"))
         self.assertIsNone(cli._safe_archive_relative("root//absolute.py"))
+
+    def test_symlinked_managed_directory_fails_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+            output.mkdir()
+            (output / "Repos").symlink_to(root / "elsewhere", target_is_directory=True)
+            with mock.patch.object(cli, "whoami", return_value="alice"), \
+                 mock.patch.object(cli, "get_orgs", return_value=set()), \
+                 mock.patch.object(cli, "get_owned_repos", return_value={}), \
+                 mock.patch.object(cli, "search_commits", return_value=[]), \
+                 mock.patch("sys.stderr") as stderr:
+                result = cli.main(["refresh", "repos", "--output", str(output)], env={})
+        self.assertEqual(result, 1)
+        self.assertIn("Cannot write generated files",
+                      "".join(call.args[0] for call in stderr.write.call_args_list))
 
     def test_no_configuration_leaks_between_invocations(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -270,6 +318,23 @@ else:
             self.assertTrue((checkout / "Activity.md").is_file())
             self.assertTrue((checkout / "GitHub Dashboard.md").is_file())
             self.assertFalse((Path(temporary) / "Activity.md").exists())
+
+            config = Path(temporary) / "custom config.json"
+            config.write_text(
+                json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
+            configured = subprocess.run(
+                [sys.executable, str(checkout / "gh_puller.py"), "scripts",
+                 "--config", str(config)], cwd=temporary, env=environment,
+                capture_output=True, text=True, check=False)
+            self.assertEqual(configured.returncode, 0, configured.stderr)
+            self.assertIn('name: "Elixir"',
+                          (checkout / "Scripts.base").read_text(encoding="utf-8"))
+
+    def test_legacy_wrapper_requires_a_section(self):
+        result = subprocess.run([sys.executable, str(ROOT / "gh_puller.py")],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("required: command", result.stderr)
 
 
 class TestShellScripts(unittest.TestCase):

@@ -1,21 +1,22 @@
 #!/bin/bash
-# Install, update, or remove the gh_puller scheduler.
+# Install, update, or remove the Obsidian Code Atlas scheduler.
 # Supports macOS launchd and Unix cron.
 set -euo pipefail
 
-PYTHON="${GH_PULLER_PYTHON:-python3}"
+PYTHON="${OBSIDIAN_CODE_ATLAS_PYTHON:-${GH_PULLER_PYTHON:-python3}}"
 # Resolve this script's directory, following symlinks, so the install directory
 # is correct even when setup.sh is invoked via a symlink.
 BASE="$($PYTHON -c 'import os, sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "$0")"
-NAME="gh_puller"
-PLIST_TEMPLATE="$BASE/gh_puller.plist.template"
+NAME="obsidian-code-atlas"
+PLIST_TEMPLATE="$BASE/obsidian-code-atlas.plist.template"
 
 # Derive the LaunchAgent label from the install path so two vaults on the same
 # Mac do not silently overwrite each other's LaunchAgent.
 HASH=$("$PYTHON" -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$BASE")
-LABEL="com.ghpuller.${NAME}.${HASH}"
+LABEL="com.${NAME}.${HASH}"
 PLIST_PATH="$HOME/Library/LaunchAgents/${LABEL}.plist"
-CRON_MARKER="# gh_puller auto-refresh"
+CRON_MARKER="# obsidian-code-atlas auto-refresh"
+LEGACY_CRON_MARKER="# gh_puller auto-refresh"
 
 usage() {
     cat <<EOF
@@ -27,7 +28,7 @@ Usage: $0 [--launchd | --cron | --uninstall | --help]
   --help       Show this message.
 
 The install directory is detected from this script's location, so the
-scheduler works wherever you put gh_puller.
+scheduler works wherever you put Obsidian Code Atlas.
 EOF
 }
 
@@ -55,6 +56,12 @@ PY
     chmod 644 "$PLIST_PATH"
 
     launchctl unload -w "$PLIST_PATH" 2>/dev/null || true
+    for legacy_plist_path in "$HOME"/Library/LaunchAgents/com.ghpuller.gh_puller.*.plist; do
+        if [[ -f "$legacy_plist_path" ]]; then
+            launchctl unload -w "$legacy_plist_path" 2>/dev/null || true
+            rm -f "$legacy_plist_path"
+        fi
+    done
     launchctl load -w "$PLIST_PATH"
     echo "Installed LaunchAgent: $PLIST_PATH"
     echo "  Runs daily at 08:00 and whenever you log in."
@@ -64,24 +71,36 @@ uninstall_launchd() {
     if [[ "$OSTYPE" != darwin* ]]; then
         return 0
     fi
-    if [[ -f "$PLIST_PATH" ]]; then
-        launchctl unload -w "$PLIST_PATH" 2>/dev/null || true
-        rm -f "$PLIST_PATH"
-        echo "Removed LaunchAgent: $PLIST_PATH"
-    fi
+    for plist_path in "$PLIST_PATH" "$HOME"/Library/LaunchAgents/com.ghpuller.gh_puller.*.plist; do
+        if [[ -f "$plist_path" ]]; then
+            launchctl unload -w "$plist_path" 2>/dev/null || true
+            rm -f "$plist_path"
+            echo "Removed LaunchAgent: $plist_path"
+        fi
+    done
 }
 
 # The job is a single line ending in the marker, so one fixed-string filter
-# removes it no matter where gh_puller is installed. Trailing "# ..." is a
+# removes it no matter where Obsidian Code Atlas is installed. Trailing "# ..." is a
 # shell comment, so it does not affect the command cron runs.
 CRON_LINE="0 8 * * * \"$BASE/refresh.sh\" all $CRON_MARKER"
 
-# Print the current crontab with every gh_puller entry removed. Also drops
-# entries written by earlier versions, which put the marker on its own line
-# above an unmarked job line.
+# Print the current crontab with every Obsidian Code Atlas entry removed. Also
+# drops entries written by earlier versions, which put the marker on its own
+# line above an unmarked job line.
 strip_cron_entries() {
     ( crontab -l 2>/dev/null || true ) \
-        | grep -vF "$CRON_MARKER" \
+        | awk -v marker="$CRON_MARKER" -v legacy_marker="$LEGACY_CRON_MARKER" '
+            index($0, marker) || index($0, legacy_marker) {
+                remove_next_refresh=1
+                next
+            }
+            remove_next_refresh && index($0, "/refresh.sh") {
+                remove_next_refresh=0
+                next
+            }
+            { remove_next_refresh=0; print }
+        ' \
         | grep -vF "$BASE/refresh.sh" \
         || true
 }

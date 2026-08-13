@@ -1,5 +1,5 @@
 #!/bin/bash
-# Refresh the gh_puller Obsidian dashboard. Safe to run from cron/launchd,
+# Refresh the Obsidian Code Atlas dashboard. Safe to run from cron/launchd,
 # where PATH is minimal — so we add common install locations and resolve the
 # install directory from this script's location.
 set -euo pipefail
@@ -11,7 +11,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Use the python3 found on PATH, or let the user override with an env variable.
-PYTHON="${GH_PULLER_PYTHON:-python3}"
+PYTHON="${OBSIDIAN_CODE_ATLAS_PYTHON:-${GH_PULLER_PYTHON:-python3}}"
 
 # Resolve this script's directory, following symlinks, so the wrapper works
 # wherever it is installed and even if it is invoked via a symlink.

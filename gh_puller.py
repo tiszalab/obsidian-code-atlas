@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gh_puller — turn this Obsidian vault into a GitHub activity dashboard.
+Obsidian Code Atlas — turn this Obsidian vault into a GitHub activity dashboard.
 
 Generates three things from your `gh`-authenticated account:
 
@@ -20,8 +20,10 @@ Usage (run from this folder):
 Requires the `gh` CLI, authenticated (`gh auth status`).
 
 Configuration:
-    Create `gh_puller.json` in this folder or set `GH_PULLER_EXTENSIONS` to add
-    or override which file extensions are mirrored and how they are labeled.
+    Create `obsidian-code-atlas.json` in this folder or set
+    `OBSIDIAN_CODE_ATLAS_EXTENSIONS` to add or override which file extensions
+    are mirrored and how they are labeled. The legacy `gh_puller.json`,
+    `GH_PULLER_CONFIG`, and `GH_PULLER_EXTENSIONS` names remain supported.
 """
 from __future__ import annotations
 
@@ -42,7 +44,7 @@ from pathlib import Path
 # ─────────────────────────── version check ────────────────────────────
 
 if sys.version_info < (3, 9):
-    print("gh_puller requires Python 3.9 or newer", file=sys.stderr)
+    print("Obsidian Code Atlas requires Python 3.9 or newer", file=sys.stderr)
     sys.exit(1)
 
 # ─────────────────────────── configuration ────────────────────────────
@@ -66,8 +68,8 @@ def _default_languages() -> dict[str, tuple[str, str]]:
 
     The set below covers the languages mentioned in the issue and many other
     common source file types. Users can extend or override it via
-    `gh_puller.json` in this folder or the `GH_PULLER_EXTENSIONS` environment
-    variable.
+    `obsidian-code-atlas.json` in this folder or the
+    `OBSIDIAN_CODE_ATLAS_EXTENSIONS` environment variable.
     """
     return {
         # Original core languages
@@ -148,7 +150,7 @@ def _parse_languages(d: dict) -> dict[str, tuple[str, str] | None]:
 
 
 def _parse_env_extensions(value: str) -> dict[str, tuple[str, str] | None]:
-    """Parse the GH_PULLER_EXTENSIONS environment variable.
+    """Parse an extension override environment variable.
 
     Format:  .ext:Label:fence,.ext:Label,...
     A leading '-' before an extension (e.g. '-.py') removes it.
@@ -185,7 +187,17 @@ def _parse_env_extensions(value: str) -> dict[str, tuple[str, str] | None]:
 def _load_languages() -> dict[str, tuple[str, str]]:
     """Return the effective language map, merging defaults, JSON config and env."""
     langs = _default_languages()
-    config_path = Path(os.environ.get("GH_PULLER_CONFIG", VAULT / "gh_puller.json"))
+    config_override = os.environ.get("OBSIDIAN_CODE_ATLAS_CONFIG") or os.environ.get(
+        "GH_PULLER_CONFIG"
+    )
+    config_path = (
+        Path(config_override)
+        if config_override
+        else VAULT / "obsidian-code-atlas.json"
+    )
+    legacy_config_path = VAULT / "gh_puller.json"
+    if not config_override and not config_path.exists() and legacy_config_path.exists():
+        config_path = legacy_config_path
     if config_path.exists():
         try:
             with config_path.open("r", encoding="utf-8") as f:
@@ -199,7 +211,9 @@ def _load_languages() -> dict[str, tuple[str, str]]:
         except Exception as e:
             print(f"Warning: could not load {config_path}: {e}", file=sys.stderr)
 
-    env = os.environ.get("GH_PULLER_EXTENSIONS", "")
+    env = os.environ.get("OBSIDIAN_CODE_ATLAS_EXTENSIONS") or os.environ.get(
+        "GH_PULLER_EXTENSIONS", ""
+    )
     if env:
         for ext, value in _parse_env_extensions(env).items():
             if value is None:
@@ -502,7 +516,7 @@ def build_activity(commits: list[dict]) -> None:
 
     lines = [
         "---",
-        "source: gh_puller",
+        "source: obsidian-code-atlas",
         f"generated: {now.strftime('%Y-%m-%d %H:%M UTC')}",
         "---",
         "# 📊 GitHub Activity",
@@ -547,7 +561,7 @@ def build_repos(repos: dict[str, dict]) -> None:
 
     for full, r in sorted(repos.items()):
         fields = {
-            "source": "gh_puller",
+            "source": "obsidian-code-atlas",
             "tags": ["gh/repo"],
             "repo": r["full_name"],
             "owner": r["owner"],
@@ -655,7 +669,7 @@ def build_scripts(repos: dict[str, dict]) -> None:
             lang_label, fence_lang = LANG.get(ext, ("text", ""))
             gh_url = f"{r['url']}/blob/{branch}/{rel}"
             fields = {
-                "source": "gh_puller",
+                "source": "obsidian-code-atlas",
                 "tags": ["gh/script"],
                 "repo": r["full_name"],
                 "path": rel,
@@ -803,11 +817,11 @@ views:
 SCRIPTS_BASE_CONTENT = _build_scripts_base(LANG)
 
 HOME_CONTENT = """---
-source: gh_puller
+source: obsidian-code-atlas
 ---
 # 🐙 GitHub Dashboard
 
-Your GitHub activity, mirrored into this vault by `gh_puller`.
+Your GitHub activity, mirrored into this vault by Obsidian Code Atlas.
 
 ## Views
 
@@ -817,8 +831,8 @@ Your GitHub activity, mirrored into this vault by `gh_puller`.
 
 ## Refresh
 
-Regenerate everything from a terminal, from the `gh_puller` folder holding
-this note:
+Regenerate everything from a terminal, from the `obsidian-code-atlas` folder
+holding this note:
 
 ```bash
 ./refresh.sh all

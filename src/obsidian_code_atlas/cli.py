@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from . import __version__
+from . import scheduler
 
 COMMIT_LIMIT = 300
 NETWORK_RETRIES = 5
@@ -601,8 +603,9 @@ Regenerate everything from a terminal:
 obsidian-code-atlas refresh all --output "/path/to/your/vault/Code Atlas"
 ```
 
-Or refresh one section: `activity`, `repos`, or `scripts`. Repository checkouts
-also include `refresh.sh` and `setup.sh` for scheduler-friendly operation.
+Or refresh one section: `activity`, `repos`, or `scripts`. Install a daily job with
+`obsidian-code-atlas scheduler install --cron --output "/path/to/your/vault/Code Atlas"`
+or use `--launchd` on macOS.
 
 > The `Repos/` and `Scripts/` folders and the `Activity.md` / `*.base` files are
 > fully managed by the tool — edits there are overwritten on the next run.
@@ -658,17 +661,100 @@ def build_parser() -> argparse.ArgumentParser:
                                 choices=["all", "activity", "repos", "scripts"])
     refresh_parser.add_argument("--output", help="directory receiving all generated content")
     refresh_parser.add_argument("--config", help="JSON configuration file")
+
+    scheduler_parser = subparsers.add_parser("scheduler", help="manage automatic refresh jobs")
+    scheduler_subparsers = scheduler_parser.add_subparsers(dest="scheduler_command", required=True)
+    install_parser = scheduler_subparsers.add_parser("install", help="install an automatic refresh job")
+    install_group = install_parser.add_mutually_exclusive_group(required=True)
+    install_group.add_argument("--launchd", action="store_true", help="install a macOS LaunchAgent")
+    install_group.add_argument("--cron", action="store_true", help="install a cron job")
+    install_parser.add_argument("--output", help="directory receiving all generated content")
+    install_parser.add_argument("--config", help="JSON configuration file")
+    status_parser = scheduler_subparsers.add_parser("status", help="inspect automatic refresh jobs")
+    status_parser.add_argument("--output", help="directory receiving all generated content")
+    uninstall_parser = scheduler_subparsers.add_parser("uninstall", help="remove automatic refresh jobs")
+    uninstall_parser.add_argument("--output", help="directory receiving all generated content")
     return parser
+
+
+def _selected_output(args: argparse.Namespace, environment: Mapping[str, str],
+                     parser: argparse.ArgumentParser) -> Path:
+    output_value = args.output if args.output is not None else environment.get("OBSIDIAN_CODE_ATLAS_OUTPUT")
+    if not output_value:
+        parser.error("output directory is required; use --output PATH or OBSIDIAN_CODE_ATLAS_OUTPUT")
+    return Path(output_value).expanduser().resolve()
+
+
+def _scheduler_home(environment: Mapping[str, str]) -> Path:
+    return Path(environment.get("HOME") or Path.home()).expanduser().resolve()
+
+
+def _explicit_config_path(explicit: Optional[str], env: Mapping[str, str]) -> Optional[Path]:
+    """Resolve a config path the user actually opted into (flag or env var).
+
+    Unlike `select_config_path`, this intentionally skips the auto-discovery
+    fallback inside the output directory: scheduled jobs must not bake in a
+    file that was merely *found*, or deleting/renaming it later turns a soft
+    default into a hard failure every night.
+    """
+    configured = explicit if explicit is not None else (
+        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG") or None
+    )
+    if configured is None:
+        return None
+    return Path(configured).expanduser().resolve()
+
+
+def _run_scheduler(args: argparse.Namespace, output: Path, environment: Mapping[str, str],
+                   parser: argparse.ArgumentParser) -> int:
+    home = _scheduler_home(environment)
+    try:
+        if args.scheduler_command == "install":
+            config = _explicit_config_path(args.config, environment)
+            if config is not None and not config.is_file():
+                parser.error("configuration file does not exist or is not a file: {}".format(config))
+            if args.launchd:
+                path = scheduler.install_launchd(output, home, config, environment=environment)
+                print("Installed LaunchAgent: {}".format(path))
+                print("Schedule: daily at 08:00 and when the agent loads")
+            else:
+                line = scheduler.install_cron(output, config, environment=environment)
+                print("Installed cron job: {}".format(line))
+            return 0
+        if args.scheduler_command == "uninstall":
+            launchd_removed = scheduler.uninstall_launchd(output, home)
+            cron_removed = scheduler.uninstall_cron(output)
+            print("LaunchAgent: {}".format("removed" if launchd_removed else "not installed"))
+            print("Cron: {}".format("removed" if cron_removed else "not installed"))
+            return 0
+        launchd_entry, cron_entry = scheduler.scheduler_status(output, home)
+    except scheduler.SchedulerError as exc:
+        print("Scheduler error: {}".format(exc), file=sys.stderr)
+        return 1
+    print("Output: {}".format(output))
+    print("Identifier: {}".format(scheduler.scheduler_identifier(output)))
+    if launchd_entry is None:
+        print("launchd: not installed")
+    else:
+        print("launchd: installed")
+        print("  Schedule: daily at 08:00 and when the agent loads")
+        print("  Command: {}".format(shlex.join(launchd_entry.get("ProgramArguments", []))))
+    if cron_entry is None:
+        print("cron: not installed")
+    else:
+        print("cron: installed")
+        print("  Schedule: daily at 08:00")
+        print("  Entry: {}".format(cron_entry))
+    return 0 if launchd_entry is not None or cron_entry is not None else 1
 
 
 def main(argv: Optional[List[str]] = None, env: Optional[Mapping[str, str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     environment = os.environ if env is None else env
-    output_value = args.output if args.output is not None else environment.get("OBSIDIAN_CODE_ATLAS_OUTPUT")
-    if not output_value:
-        parser.error("output directory is required; use --output PATH or OBSIDIAN_CODE_ATLAS_OUTPUT")
-    output = Path(output_value).expanduser().resolve()
+    output = _selected_output(args, environment, parser)
+    if args.command == "scheduler":
+        return _run_scheduler(args, output, environment, parser)
     try:
         output.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

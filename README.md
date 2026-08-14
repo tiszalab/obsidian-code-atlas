@@ -21,7 +21,8 @@ Install the command from a local clone with pip:
 
 ```bash
 git clone https://github.com/tiszalab/obsidian-code-atlas.git
-python3 -m pip install ./obsidian-code-atlas
+cd obsidian-code-atlas
+python3 -m pip install .
 ```
 
 For an isolated command-line installation, use pipx:
@@ -30,9 +31,74 @@ For an isolated command-line installation, use pipx:
 pipx install ./obsidian-code-atlas
 ```
 
-Development checkouts can temporarily use the deprecated compatibility scripts described below.
+You can also install directly from the Git URL if your pip supports it:
 
-## CLI
+```bash
+python3 -m pip install git+https://github.com/tiszalab/obsidian-code-atlas.git
+```
+
+Upgrade an existing installation from a newer checkout:
+
+```bash
+python3 -m pip install --upgrade .
+# or, for pipx:
+pipx upgrade --editable obsidian-code-atlas
+```
+
+The application code lives in your Python environment; generated Obsidian notes live in the vault you choose below.
+
+## Initializing a vault
+
+The `init` command prepares an existing Obsidian vault to receive generated notes and optionally installs a daily scheduler.
+
+```bash
+obsidian-code-atlas init "/path/to/My Vault" --output "Code Atlas" --scheduler launchd
+```
+
+Arguments:
+
+- `VAULT_PATH` — root of an existing Obsidian vault (the directory containing `.obsidian/`).
+- `--output` — name of the generated atlas folder inside the vault (default: `Code Atlas`).
+- `--scheduler` — `launchd` (macOS), `cron` (Unix), or `none` (default).
+- `--gitignore` — add the generated output folder to the parent Git repository’s `.gitignore` (default).
+- `--track-generated` — opt out of the default `.gitignore` entry.
+- `--force` — initialize even if `.obsidian/` is missing.
+- `--no-refresh` — skip the first `refresh all`.
+- `--config` — path to a custom `obsidian-code-atlas.json` configuration file.
+
+`init` is idempotent: rerunning it updates the scheduler and Git ignore entry without duplicating them or deleting existing generated notes.
+
+### Git integration
+
+If your vault is inside a Git worktree, `init` finds the actual repository root (even when the vault is nested below it) and adds an anchored ignore block:
+
+```gitignore
+# BEGIN obsidian-code-atlas: <stable-id>
+/path/relative/to/repo/My Vault/Code Atlas/
+# END obsidian-code-atlas: <stable-id>
+```
+
+This leaves unrelated `.gitignore` content untouched. Because the whole output directory is ignored, generated notes and output-local configuration will not be tracked by the parent repository. Use `--track-generated` to skip this step.
+
+### Diagnosing the setup
+
+```bash
+obsidian-code-atlas doctor --output "/path/to/My Vault/Code Atlas"
+```
+
+`doctor` checks:
+
+- package and Python version;
+- whether the output directory exists and is writable;
+- whether the output is inside an Obsidian vault;
+- `gh` availability and `gh auth status`;
+- effective configuration file and JSON validity;
+- installed scheduler status;
+- parent Git worktree and whether the output is ignored.
+
+It exits with status `1` if a condition prevents `refresh` from working. Warnings that do not block refresh keep a zero status. `doctor` never prints tokens or credentials.
+
+## Refreshing content
 
 Every package invocation needs an output directory. This prevents generated files from silently going into the current working directory or package installation:
 
@@ -69,20 +135,6 @@ launchd runs both at login and daily at 08:00. Cron runs daily at 08:00. Cron ou
 
 `scheduler status` prints the expected identifier, installed scheduler types, schedule, and command. It returns status 1 when neither matching job is installed and 0 when at least one is found. Uninstall removes only jobs belonging to the selected output directory.
 
-## Development-checkout compatibility
-
-From a repository checkout, the legacy commands still write to the repository directory:
-
-```bash
-python3 gh_puller.py all
-./refresh.sh all
-./setup.sh --launchd
-./setup.sh --cron
-./setup.sh --uninstall
-```
-
-These checkout-only scheduler helpers, `crontab.example`, and `obsidian-code-atlas.plist.template` are deprecated compatibility paths. New installations should use `obsidian-code-atlas scheduler`; the shell files will be removed in a later migration. Set `OBSIDIAN_CODE_ATLAS_PYTHON` to override the compatibility scripts' Python interpreter; the legacy `GH_PULLER_PYTHON` variable is still accepted.
-
 ## Configuring language support
 
 Create `obsidian-code-atlas.json` in the output directory using this structure (repository checkouts also include `obsidian-code-atlas.json.example`):
@@ -115,15 +167,56 @@ OBSIDIAN_CODE_ATLAS_EXTENSIONS=".ex:Elixir:elixir,.exs:Elixir:elixir,-.yml" \
 
 The legacy `GH_PULLER_EXTENSIONS` name is supported. Format is `.ext:Label:fence`; two parts (`.ext:Label`) and one part (`.ext`) are also accepted, and a leading `-` removes an extension.
 
+## Migration for existing clone-inside-vault users
+
+Older setups cloned this repository directly into an Obsidian vault and ran `gh_puller.py`, `refresh.sh`, or `setup.sh` from there. That still works as a deprecated compatibility path, but the recommended setup is now:
+
+1. Remove any old scheduler installed by `setup.sh`:
+   ```bash
+   ./setup.sh --uninstall
+   ```
+2. Install the package from a separate checkout:
+   ```bash
+   git clone https://github.com/tiszalab/obsidian-code-atlas.git
+   cd obsidian-code-atlas
+   python3 -m pip install .
+   ```
+3. Initialize your vault with the new command:
+   ```bash
+   obsidian-code-atlas init "/path/to/My Vault" --output "Code Atlas"
+   ```
+
+The generated dashboard instructions now point to the installed package command instead of a repository checkout.
+
+## Development-checkout compatibility
+
+From a repository checkout, the legacy commands still write to the repository directory:
+
+```bash
+python3 gh_puller.py all
+./refresh.sh all
+./setup.sh --launchd
+./setup.sh --cron
+./setup.sh --uninstall
+```
+
+These checkout-only scheduler helpers, `crontab.example`, and `obsidian-code-atlas.plist.template` are deprecated compatibility paths. New installations should use `obsidian-code-atlas init` and `obsidian-code-atlas scheduler`; the shell files and templates will be removed in a later migration.
+
 ## File layout
 
 ```text
-.
+|.
 ├── pyproject.toml
 ├── src/obsidian_code_atlas/      # installable package
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py
+│   ├── doctor.py
+│   ├── init.py
+│   └── scheduler.py
 ├── gh_puller.py                  # thin legacy checkout wrapper
 ├── refresh.sh                    # scheduler-friendly wrapper
-├── setup.sh                      # launchd / cron installer
+├── setup.sh                      # launchd / cron installer (deprecated)
 ├── obsidian-code-atlas.plist.template
 ├── crontab.example
 └── obsidian-code-atlas.json.example
@@ -131,4 +224,13 @@ The legacy `GH_PULLER_EXTENSIONS` name is supported. Format is `.ext:Label:fence
 
 ## Uninstall
 
-Run `obsidian-code-atlas scheduler uninstall --output PATH` before removing an installed package. For a legacy scheduled checkout, run `./setup.sh --uninstall` before deleting it. Remove a pipx installation with `pipx uninstall obsidian-code-atlas`, or uninstall a pip installation with `python3 -m pip uninstall obsidian-code-atlas`.
+Remove the scheduler first, then uninstall the package. Generated notes are retained unless you delete the output folder manually.
+
+```bash
+obsidian-code-atlas scheduler uninstall --output "/path/to/My Vault/Code Atlas"
+python3 -m pip uninstall obsidian-code-atlas
+# or, for pipx:
+pipx uninstall obsidian-code-atlas
+```
+
+For a legacy scheduled checkout, run `./setup.sh --uninstall` before deleting the checkout directory.

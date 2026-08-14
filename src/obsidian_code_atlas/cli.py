@@ -689,12 +689,28 @@ def _scheduler_home(environment: Mapping[str, str]) -> Path:
     return Path(environment.get("HOME") or Path.home()).expanduser().resolve()
 
 
+def _explicit_config_path(explicit: Optional[str], env: Mapping[str, str]) -> Optional[Path]:
+    """Resolve a config path the user actually opted into (flag or env var).
+
+    Unlike `select_config_path`, this intentionally skips the auto-discovery
+    fallback inside the output directory: scheduled jobs must not bake in a
+    file that was merely *found*, or deleting/renaming it later turns a soft
+    default into a hard failure every night.
+    """
+    configured = explicit if explicit is not None else (
+        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG") or None
+    )
+    if configured is None:
+        return None
+    return Path(configured).expanduser().resolve()
+
+
 def _run_scheduler(args: argparse.Namespace, output: Path, environment: Mapping[str, str],
                    parser: argparse.ArgumentParser) -> int:
     home = _scheduler_home(environment)
     try:
         if args.scheduler_command == "install":
-            config = select_config_path(output, args.config, environment)
+            config = _explicit_config_path(args.config, environment)
             if config is not None and not config.is_file():
                 parser.error("configuration file does not exist or is not a file: {}".format(config))
             if args.launchd:
@@ -702,7 +718,7 @@ def _run_scheduler(args: argparse.Namespace, output: Path, environment: Mapping[
                 print("Installed LaunchAgent: {}".format(path))
                 print("Schedule: daily at 08:00 and when the agent loads")
             else:
-                line = scheduler.install_cron(output, config)
+                line = scheduler.install_cron(output, config, environment=environment)
                 print("Installed cron job: {}".format(line))
             return 0
         if args.scheduler_command == "uninstall":

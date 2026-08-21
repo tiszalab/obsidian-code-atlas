@@ -97,8 +97,16 @@ def git_worktree_root(start: Path, environment: Mapping[str, str]) -> Optional[P
     return Path(text).resolve()
 
 
-def _ignore_pattern(repo_root: Path, output: Path) -> str:
+def _ignore_pattern(repo_root: Path, output: Path) -> Optional[str]:
+    """Anchored ignore pattern for ``output``, or ``None`` when there is none.
+
+    When the output *is* the worktree root, ``relative_to`` yields ``.`` and
+    there is no meaningful pattern: Git never ignores the repository root, and
+    writing "/./" would be a rule that matches nothing.
+    """
     rel = PurePosixPath(output.resolve().relative_to(repo_root.resolve()))
+    if str(rel) == ".":
+        return None
     return "/{}/".format(rel)
 
 
@@ -119,6 +127,8 @@ def update_gitignore(repo_root: Path, output: Path, identifier: str) -> Tuple[bo
     """
     gitignore = repo_root / ".gitignore"
     pattern = _ignore_pattern(repo_root, output)
+    if pattern is None:
+        return False, "output is the Git worktree root and cannot be ignored by it"
     begin, end = _gitignore_markers(identifier)
 
     if gitignore.is_file():
@@ -212,14 +222,20 @@ def run_init(
         context = cli.Context(output=output, languages=languages)
         refresh_rc = cli.refresh(context, "all")
 
-    if scheduler_type != "none" and refresh_rc == 0:
-        from . import scheduler as sched
-        home = Path(environment.get("HOME") or Path.home()).expanduser().resolve()
-        if scheduler_type == "launchd":
-            sched.install_launchd(output, home, config_path, environment=environment)
-            info["scheduler"] = "launchd"
-        elif scheduler_type == "cron":
-            sched.install_cron(output, config_path, environment=environment)
-            info["scheduler"] = "cron"
+    if scheduler_type != "none":
+        if refresh_rc != 0:
+            # Don't schedule a job whose very first run just failed; say so
+            # rather than reporting a bare "none" the caller cannot explain.
+            info["scheduler"] = "not installed (initial refresh failed; " \
+                                "fix the error above, then run `scheduler install`)"
+        else:
+            from . import scheduler as sched
+            home = Path(environment.get("HOME") or Path.home()).expanduser().resolve()
+            if scheduler_type == "launchd":
+                sched.install_launchd(output, home, config_path, environment=environment)
+                info["scheduler"] = "launchd"
+            elif scheduler_type == "cron":
+                sched.install_cron(output, config_path, environment=environment)
+                info["scheduler"] = "cron"
 
     return vault, output, info, refresh_rc

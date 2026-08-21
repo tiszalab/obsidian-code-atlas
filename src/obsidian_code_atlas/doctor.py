@@ -6,11 +6,11 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Mapping, Optional
 
 from . import __version__
-from .init import git_worktree_root
+from .init import _existing_pattern_covers, _ignore_pattern, git_worktree_root
 
 
 def _is_writable(path: Path) -> bool:
@@ -108,20 +108,28 @@ def run_doctor(
     repo_root = git_worktree_root(output, environment)
     if repo_root:
         print("Git worktree: {}".format(repo_root))
-        rel = PurePosixPath(output.resolve().relative_to(repo_root.resolve()))
-        pattern = "/{}/".format(rel)
-        gitignore = repo_root / ".gitignore"
-        ignored = False
-        if gitignore.is_file():
-            text = gitignore.read_text(encoding="utf-8")
-            ignored = pattern in text or pattern.rstrip("/") in text
-        if ignored:
-            print("Git ignore: output is ignored")
-        else:
+        pattern = _ignore_pattern(repo_root, output)
+        if pattern is None:
             warnings.append(
-                "output is inside a Git worktree but not ignored; "
-                "run `init --gitignore` or add it to .gitignore"
+                "output is the Git worktree root, so generated files cannot be "
+                "ignored by that repository"
             )
+        else:
+            gitignore = repo_root / ".gitignore"
+            ignored = False
+            if gitignore.is_file():
+                # Match whole ignore lines: a substring test would accept an
+                # unrelated rule ("/Code Atlas Backup/"), a commented-out one,
+                # or a negation ("!/Code Atlas/") as proof the output is ignored.
+                text = gitignore.read_text(encoding="utf-8")
+                ignored = _existing_pattern_covers(pattern, text)
+            if ignored:
+                print("Git ignore: output is ignored")
+            else:
+                warnings.append(
+                    "output is inside a Git worktree but not ignored; "
+                    "run `init --gitignore` or add it to .gitignore"
+                )
     else:
         print("Git worktree: (none)")
 

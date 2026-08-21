@@ -683,7 +683,8 @@ def build_parser() -> argparse.ArgumentParser:
                              help="install a daily scheduler (default: none)")
     init_parser.add_argument("--gitignore", dest="gitignore", action="store_true", default=True,
                              help="ignore generated output in the parent Git repository (default)")
-    init_parser.add_argument("--track-generated", dest="track_generated", action="store_true",
+    init_parser.add_argument("--no-gitignore", "--track-generated", dest="gitignore",
+                             action="store_false",
                              help="do not add generated output to .gitignore")
     init_parser.add_argument("--force", action="store_true",
                              help="initialize even if the vault has no .obsidian directory")
@@ -779,7 +780,7 @@ def _run_init(args: argparse.Namespace, environment: Mapping[str, str],
             Path(args.vault).expanduser().resolve(),
             args.output,
             args.scheduler,
-            track_generated=args.track_generated,
+            track_generated=not args.gitignore,
             config_path=config_path,
             force=args.force,
             no_refresh=args.no_refresh,
@@ -787,6 +788,14 @@ def _run_init(args: argparse.Namespace, environment: Mapping[str, str],
         )
     except init.InitError as exc:
         parser.error(str(exc))
+    except FileNotFoundError as exc:
+        # The initial refresh loads configuration, which may come from
+        # OBSIDIAN_CODE_ATLAS_CONFIG rather than --config; init only validates
+        # the flag, so a stale env var surfaces here.
+        parser.error(str(exc))
+    except ManagedPathError as exc:
+        print("Cannot write generated files: {}".format(exc), file=sys.stderr)
+        return 1
     except scheduler.SchedulerError as exc:
         print("Scheduler error: {}".format(exc), file=sys.stderr)
         return 1

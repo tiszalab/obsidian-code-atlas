@@ -61,7 +61,7 @@ Arguments:
 - `--output` — name of the generated atlas folder inside the vault (default: `Code Atlas`).
 - `--scheduler` — `launchd` (macOS), `cron` (Unix), or `none` (default).
 - `--gitignore` — add the generated output folder to the parent Git repository’s `.gitignore` (default).
-- `--track-generated` — opt out of the default `.gitignore` entry.
+- `--no-gitignore` (alias `--track-generated`) — opt out of the default `.gitignore` entry.
 - `--force` — initialize even if `.obsidian/` is missing.
 - `--no-refresh` — skip the first `refresh all`.
 - `--config` — path to a custom `obsidian-code-atlas.json` configuration file.
@@ -78,7 +78,7 @@ If your vault is inside a Git worktree, `init` finds the actual repository root 
 # END obsidian-code-atlas: <stable-id>
 ```
 
-This leaves unrelated `.gitignore` content untouched. Because the whole output directory is ignored, generated notes and output-local configuration will not be tracked by the parent repository. Use `--track-generated` to skip this step.
+This leaves unrelated `.gitignore` content untouched. Because the whole output directory is ignored, generated notes and output-local configuration will not be tracked by the parent repository. Use `--no-gitignore` (or its alias `--track-generated`) to skip this step. When the output directory *is* the worktree root there is no rule that could ignore it, so `init` and `doctor` say so instead of writing one.
 
 ### Diagnosing the setup
 

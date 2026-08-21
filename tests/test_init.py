@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -232,6 +234,31 @@ class TestGitignoreIntegration(unittest.TestCase):
         self.assertEqual(info["git_action"], "no parent Git repository")
         self.assertFalse((vault / ".gitignore").exists())
 
+    def test_negated_or_lookalike_rules_do_not_count_as_ignored(self):
+        vault = self.root / "vault"
+        vault.mkdir()
+        (vault / ".obsidian").mkdir()
+        self._git_init(vault)
+        (vault / ".gitignore").write_text(
+            "/Code Atlas Backup/\n# /Code Atlas/\n!/Code Atlas/\n", encoding="utf-8")
+        _, _, info, _ = self._run_init(vault)
+        text = (vault / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("BEGIN obsidian-code-atlas:", text)
+        self.assertIn("added managed block", info["git_action"])
+
+    def test_output_at_worktree_root_is_reported_not_written_as_dot(self):
+        repo = self.root / "atlas"
+        repo.mkdir()
+        (repo / ".obsidian").mkdir()
+        self._git_init(repo)
+        # --output "." puts the atlas at the worktree root, where no ignore
+        # rule could apply.
+        _, _, info, _ = self._run_init(repo, output=".")
+        gitignore = repo / ".gitignore"
+        if gitignore.is_file():
+            self.assertNotIn("/./", gitignore.read_text(encoding="utf-8"))
+        self.assertIn("worktree root", info["git_action"])
+
     def test_no_git_repository_does_nothing(self):
         vault = self.root / "vault"
         vault.mkdir()
@@ -286,6 +313,57 @@ class TestSchedulerDelegation(unittest.TestCase):
              mock.patch.object(cli, "refresh", return_value=0):
             init.run_init(vault, "Code Atlas", "cron", False, config, False, True, self.environment)
         self.assertEqual(install_cron.call_args.args[1], config)
+
+
+class TestInitRefreshFailure(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        fake_bin = self.root / "bin"
+        fake_bin.mkdir()
+        fake_gh = fake_bin / "gh"
+        fake_gh.write_text(FAKE_GH_AUTHENTICATED, encoding="utf-8")
+        fake_gh.chmod(0o755)
+        self.environment = {
+            "HOME": str(self.root / "home"),
+            "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+        }
+        self.vault = self.root / "vault"
+        self.vault.mkdir()
+        (self.vault / ".obsidian").mkdir()
+
+    def test_failed_refresh_skips_scheduler_but_explains_why(self):
+        with mock.patch.object(cli, "load_languages", return_value={}), \
+             mock.patch.object(cli, "refresh", return_value=1), \
+             mock.patch.object(scheduler, "install_launchd") as install_launchd:
+            _, _, info, rc = init.run_init(
+                self.vault, "Code Atlas", "launchd", False, None, False, False, self.environment)
+        self.assertEqual(rc, 1)
+        self.assertFalse(install_launchd.called)
+        self.assertNotEqual(info["scheduler"], "none")
+        self.assertIn("initial refresh failed", info["scheduler"])
+
+    def test_missing_config_from_environment_is_a_clean_error(self):
+        environment = dict(self.environment,
+                           OBSIDIAN_CODE_ATLAS_CONFIG=str(self.root / "gone.json"))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
+            cli.main(["init", str(self.vault), "--scheduler", "none"], env=environment)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("gone.json", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_unwritable_generated_path_is_a_clean_error(self):
+        stderr = io.StringIO()
+        with mock.patch.object(cli, "load_languages", return_value={}), \
+             mock.patch.object(cli, "refresh",
+                               side_effect=cli.ManagedPathError("escapes output directory")), \
+             contextlib.redirect_stderr(stderr):
+            rc = cli.main(["init", str(self.vault), "--scheduler", "none"], env=self.environment)
+        self.assertEqual(rc, 1)
+        self.assertIn("Cannot write generated files", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
 
 class TestDoctorCommand(unittest.TestCase):
@@ -395,6 +473,29 @@ class TestInitCLI(unittest.TestCase):
             ], env=self.environment)
         self.assertEqual(rc, 0)
         self.assertTrue((vault / "Code Atlas").is_dir())
+
+    def test_cli_no_gitignore_opts_out_and_track_generated_is_an_alias(self):
+        for flag in ("--no-gitignore", "--track-generated"):
+            with self.subTest(flag=flag):
+                args = cli.build_parser().parse_args(
+                    ["init", str(self.root), flag])
+                self.assertFalse(args.gitignore)
+        default = cli.build_parser().parse_args(["init", str(self.root)])
+        self.assertTrue(default.gitignore)
+        explicit = cli.build_parser().parse_args(["init", str(self.root), "--gitignore"])
+        self.assertTrue(explicit.gitignore)
+
+    def test_cli_no_gitignore_reaches_run_init(self):
+        vault = self.root / "Tracked Vault"
+        vault.mkdir()
+        (vault / ".obsidian").mkdir()
+        with mock.patch.object(init, "run_init",
+                               return_value=(vault, vault / "Code Atlas",
+                                             {"config": None, "git_action": "x",
+                                              "scheduler": "none"}, 0)) as run_init:
+            cli.main(["init", str(vault), "--no-gitignore", "--no-refresh"],
+                     env=self.environment)
+        self.assertTrue(run_init.call_args.kwargs["track_generated"])
 
     def test_cli_doctor_reports_success(self):
         vault = self.root / "My Vault"

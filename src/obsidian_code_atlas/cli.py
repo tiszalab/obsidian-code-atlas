@@ -674,6 +674,27 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--output", help="directory receiving all generated content")
     uninstall_parser = scheduler_subparsers.add_parser("uninstall", help="remove automatic refresh jobs")
     uninstall_parser.add_argument("--output", help="directory receiving all generated content")
+
+    init_parser = subparsers.add_parser("init", help="initialize an Obsidian vault for Code Atlas")
+    init_parser.add_argument("vault", help="path to the Obsidian vault root")
+    init_parser.add_argument("--output", default="Code Atlas",
+                             help="atlas output directory name inside the vault (default: Code Atlas)")
+    init_parser.add_argument("--scheduler", choices=["launchd", "cron", "none"], default="none",
+                             help="install a daily scheduler (default: none)")
+    init_parser.add_argument("--gitignore", dest="gitignore", action="store_true", default=True,
+                             help="ignore generated output in the parent Git repository (default)")
+    init_parser.add_argument("--no-gitignore", "--track-generated", dest="gitignore",
+                             action="store_false",
+                             help="do not add generated output to .gitignore")
+    init_parser.add_argument("--force", action="store_true",
+                             help="initialize even if the vault has no .obsidian directory")
+    init_parser.add_argument("--no-refresh", action="store_true",
+                             help="skip the initial refresh")
+    init_parser.add_argument("--config", help="JSON configuration file")
+
+    doctor_parser = subparsers.add_parser("doctor", help="diagnose Obsidian Code Atlas setup")
+    doctor_parser.add_argument("--output", help="directory receiving all generated content")
+    doctor_parser.add_argument("--config", help="JSON configuration file")
     return parser
 
 
@@ -748,13 +769,68 @@ def _run_scheduler(args: argparse.Namespace, output: Path, environment: Mapping[
     return 0 if launchd_entry is not None or cron_entry is not None else 1
 
 
+def _run_init(args: argparse.Namespace, environment: Mapping[str, str],
+              parser: argparse.ArgumentParser) -> int:
+    from . import init
+    config_path: Optional[Path] = None
+    if args.config:
+        config_path = Path(args.config).expanduser().resolve()
+    try:
+        vault, output, info, refresh_rc = init.run_init(
+            Path(args.vault).expanduser().resolve(),
+            args.output,
+            args.scheduler,
+            track_generated=not args.gitignore,
+            config_path=config_path,
+            force=args.force,
+            no_refresh=args.no_refresh,
+            environment=environment,
+        )
+    except init.InitError as exc:
+        parser.error(str(exc))
+    except FileNotFoundError as exc:
+        # The initial refresh loads configuration, which may come from
+        # OBSIDIAN_CODE_ATLAS_CONFIG rather than --config; init only validates
+        # the flag, so a stale env var surfaces here.
+        parser.error(str(exc))
+    except ManagedPathError as exc:
+        print("Cannot write generated files: {}".format(exc), file=sys.stderr)
+        return 1
+    except scheduler.SchedulerError as exc:
+        print("Scheduler error: {}".format(exc), file=sys.stderr)
+        return 1
+
+    print("Initialized Obsidian Code Atlas")
+    print("  Vault:    {}".format(vault))
+    print("  Output:   {}".format(output))
+    print("  Config:   {}".format(info["config"] or "(none)"))
+    print("  Git:      {}".format(info["git_action"]))
+    print("  Scheduler: {}".format(info["scheduler"]))
+    print("  Logs:     output/refresh.log (cron) or output/launchd.*.log (launchd)")
+    print("  Refresh manually with:")
+    print("    obsidian-code-atlas refresh all --output \"{}\"".format(output))
+    return refresh_rc
+
+
+def _run_doctor(args: argparse.Namespace, output: Path, environment: Mapping[str, str]) -> int:
+    from . import doctor
+    config_path: Optional[Path] = None
+    if args.config:
+        config_path = Path(args.config).expanduser().resolve()
+    return doctor.run_doctor(output, config_path, environment)
+
+
 def main(argv: Optional[List[str]] = None, env: Optional[Mapping[str, str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     environment = os.environ if env is None else env
+    if args.command == "init":
+        return _run_init(args, environment, parser)
     output = _selected_output(args, environment, parser)
     if args.command == "scheduler":
         return _run_scheduler(args, output, environment, parser)
+    if args.command == "doctor":
+        return _run_doctor(args, output, environment)
     try:
         output.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

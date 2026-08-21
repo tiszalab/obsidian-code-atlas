@@ -380,12 +380,11 @@ class TestCronInstaller(unittest.TestCase):
         self.state.write_text("*/5 * * * * /usr/bin/true\n", encoding="utf-8")
         self.run_setup("--cron")
         installed = self.run_setup("--cron")
-        self.assertEqual(sum("refresh.sh" in line for line in installed.splitlines()), 1)
-        self.assertIn("# obsidian-code-atlas auto-refresh", installed)
+        marker_lines = [line for line in installed.splitlines() if "# obsidian-code-atlas:" in line]
+        self.assertEqual(len(marker_lines), 1)
+        self.assertIn("obsidian_code_atlas refresh all", installed)
         removed = self.run_setup("--uninstall")
-        self.assertNotIn("refresh.sh", removed)
-        self.assertNotIn("gh_puller", removed)
-        self.assertNotIn("obsidian-code-atlas", removed)
+        self.assertNotIn("obsidian_code_atlas", removed)
         self.assertIn("*/5 * * * * /usr/bin/true", removed)
 
     def test_uninstall_removes_legacy_entry(self):

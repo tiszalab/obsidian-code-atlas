@@ -106,6 +106,25 @@ class TestCronScheduler(unittest.TestCase):
         # The PATH assignment must come before the command it applies to.
         self.assertLess(line.index("PATH="), line.index("/opt/atlas/bin/python3"))
 
+    def test_cron_line_propagates_pythonpath_for_checkout_only_installs(self):
+        # setup.sh exports PYTHONPATH=<checkout>/src; without it the nightly
+        # job cannot import obsidian_code_atlas at all.
+        line = scheduler.cron_line(self.one, executable="/opt/atlas/bin/python3",
+                                   environment={"PATH": "/usr/bin", "PYTHONPATH": "/checkout/src"})
+        self.assertIn("PYTHONPATH=/checkout/src", line)
+        self.assertLess(line.index("PYTHONPATH="), line.index("/opt/atlas/bin/python3"))
+
+    def test_cron_line_omits_pythonpath_when_the_caller_has_none(self):
+        line = scheduler.cron_line(self.one, executable="/opt/atlas/bin/python3",
+                                   environment={"PATH": "/usr/bin"})
+        self.assertNotIn("PYTHONPATH", line)
+
+    def test_cron_line_quotes_a_pythonpath_containing_spaces(self):
+        line = scheduler.cron_line(self.one, executable="/opt/atlas/bin/python3",
+                                   environment={"PATH": "/usr/bin",
+                                                "PYTHONPATH": "/my checkout/src"})
+        self.assertIn("PYTHONPATH='/my checkout/src'", line)
+
     def test_cron_line_escapes_percent_so_cron_does_not_truncate_it(self):
         output = (self.root / "100% Notes" / "Code Atlas").resolve()
         line = scheduler.cron_line(output, executable="/opt/atlas/bin/python3")
@@ -135,6 +154,20 @@ class TestLaunchdScheduler(unittest.TestCase):
         self.assertTrue(parsed["RunAtLoad"])
         self.assertEqual(Path(parsed["StandardOutPath"]).parent, self.output)
         self.assertNotIn("site-packages", parsed["StandardOutPath"])
+
+    def test_payload_propagates_pythonpath_for_checkout_only_installs(self):
+        payload = scheduler.launchd_payload(
+            self.output, executable="/opt/atlas/bin/python3",
+            environment={"PATH": "/usr/bin:/bin", "PYTHONPATH": "/checkout/src"})
+        parsed = plistlib.loads(plistlib.dumps(payload))
+        self.assertEqual(parsed["EnvironmentVariables"]["PYTHONPATH"], "/checkout/src")
+        self.assertEqual(parsed["EnvironmentVariables"]["PATH"], "/usr/bin:/bin")
+
+    def test_payload_omits_pythonpath_when_the_caller_has_none(self):
+        payload = scheduler.launchd_payload(
+            self.output, executable="/opt/atlas/bin/python3",
+            environment={"PATH": "/usr/bin:/bin"})
+        self.assertNotIn("PYTHONPATH", payload["EnvironmentVariables"])
 
     def test_outputs_have_distinct_labels_and_plist_paths(self):
         other = (self.root / "Other Vault" / "Code Atlas").resolve()

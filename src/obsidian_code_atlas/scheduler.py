@@ -63,10 +63,28 @@ def _escape_cron_percent(text: str) -> str:
     return text.replace("%", "\\%")
 
 
+def scheduled_pythonpath(environment: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """PYTHONPATH the scheduled job needs, or ``None`` when it is unnecessary.
+
+    A checkout-only install (setup.sh, which exports PYTHONPATH=<checkout>/src)
+    has no importable `obsidian_code_atlas` on the default sys.path, so a job
+    installed without this would fail every night with ImportError. Propagate
+    the caller's PYTHONPATH so the scheduled interpreter resolves the package
+    exactly the way the installing shell did.
+    """
+    env = os.environ if environment is None else environment
+    value = env.get("PYTHONPATH")
+    return value or None
+
+
 def cron_line(output: Path, config: Optional[Path] = None, executable: Optional[str] = None,
               environment: Optional[Mapping[str, str]] = None) -> str:
-    command = "PATH={} {}".format(shlex.quote(cron_path_value(environment)),
-                                   shlex.join(scheduled_arguments(output, config, executable)))
+    assignments = ["PATH={}".format(shlex.quote(cron_path_value(environment)))]
+    pythonpath = scheduled_pythonpath(environment)
+    if pythonpath:
+        assignments.append("PYTHONPATH={}".format(shlex.quote(pythonpath)))
+    command = "{} {}".format(" ".join(assignments),
+                             shlex.join(scheduled_arguments(output, config, executable)))
     log_path = shlex.quote(str(output.resolve() / "refresh.log"))
     line = "{} {} >> {} 2>&1 {}".format(SCHEDULE, command, log_path, cron_marker(output))
     return _escape_cron_percent(line)
@@ -185,8 +203,14 @@ def launchd_payload(output: Path, config: Optional[Path] = None,
         "StandardOutPath": str(output.resolve() / "launchd.out.log"),
         "StandardErrorPath": str(output.resolve() / "launchd.err.log"),
     }
+    variables = {}
     if env.get("PATH"):
-        payload["EnvironmentVariables"] = {"PATH": env["PATH"]}
+        variables["PATH"] = env["PATH"]
+    pythonpath = scheduled_pythonpath(env)
+    if pythonpath:
+        variables["PYTHONPATH"] = pythonpath
+    if variables:
+        payload["EnvironmentVariables"] = variables
     return payload
 
 

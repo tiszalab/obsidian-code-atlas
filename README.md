@@ -2,6 +2,11 @@
 
 Mirror your GitHub activity into an [Obsidian](https://obsidian.md/) vault.
 
+> [!NOTE]
+> **Who is this for?:** People who write code, host it on GitHub, and use [Obsidian](https://obsidian.md/) as a work, lab, or personal notebook for its "Second Brain" features.
+>
+> **Why `obsidian-code-atlas`?:** As a scientist, I found that I had all my laboratory notes and ideas easily searchable within an Obisidian vault. But, when I wrote code, I often found myself clunkily searching for existing scripts on GitHub in the browser and/or through my local computer's files for previously written scripts. `obsidian-code-atlas` brings code from all my project into easily searchable and visually appealling `Base` and `Note` objects in an existing Obsidian vault.
+
 It generates three things from your `gh`-authenticated account:
 
 1. **Activity.md** — recent commits across every repo you touch.

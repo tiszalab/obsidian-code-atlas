@@ -9,13 +9,13 @@ Mirror your GitHub code into an [Obsidian](https://obsidian.md/) vault.
 > 
 > **What problem does this solve?**
 > 
-> As a scientist, I love having all my laboratory notes and ideas easily searchable within an Obisidian vault. But, when I write code, I often find myself clunkily searching for existing scripts on GitHub in the browser and/or through my local computer's files for previously written scripts. 
+> As a scientist, I love having all my laboratory notes and ideas easily searchable within an Obisidian vault. But, when I write code, I often find myself clunkily searching on GitHub in the browser and/or through my local computer's files for previously written scripts. 
 > 
 > **Why `obsidian-code-atlas`?** 
 > 
-> It brings code from all my project into easily searchable and visually appealling `Base` and `Note` objects in an existing Obsidian vault. It updates each morning so scripts are always fresh.
+> It brings code from all my repos into easily searchable and visually appealling `Base` and `Note` objects inside an existing Obsidian vault. It updates each morning, so scripts are always fresh.
 
-It generates three things from your `gh`-authenticated account:
+This tool generates three things from your `gh`-authenticated account:
 
 1. **Activity.md** — recent commits across every repo you touch.
 2. **Repos/** + **Repos.base** — one note per repo, browsable as an Obsidian Base database.

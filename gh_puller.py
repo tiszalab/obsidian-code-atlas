@@ -16,7 +16,7 @@ from obsidian_code_atlas.cli import main as package_main  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Mirror GitHub activity into Obsidian.")
-    parser.add_argument("command", choices=["all", "activity", "repos", "scripts"])
+    parser.add_argument("command", choices=["all", "activity", "repos", "scripts", "issues"])
     parser.add_argument("--config", help="JSON configuration file")
     arguments = sys.argv[1:]
     parser.parse_args(arguments)

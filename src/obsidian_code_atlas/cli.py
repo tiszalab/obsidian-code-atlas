@@ -30,6 +30,9 @@ MAX_SCRIPT_BYTES = 300_000
 INCLUDE_OWNED_FORKS = False
 MIRROR_OWNED_AND_ORGS_ONLY = True
 MAX_SCRIPTS_PER_REPO = 750
+MAX_ISSUES_PER_REPO = 500
+MAX_ISSUE_BODY_BYTES = 100_000
+MAX_FRONTMATTER_TEXT = 300
 EXCLUDE_DIR_PARTS = {
     ".git", "node_modules", "site-packages", "__pycache__", "venv", ".venv",
     "env", ".env", "build", "dist", "vendor", "third_party", ".snakemake",
@@ -582,6 +585,175 @@ def build_scripts(context: Context, repos: Dict[str, dict]) -> None:
     print("✓ Wrote {} script notes to Scripts/ and Scripts.base".format(total))
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_text(value: object, limit: int = MAX_FRONTMATTER_TEXT) -> str:
+    """Flatten a GitHub-supplied string into a single safe frontmatter line."""
+    text = "" if value is None else str(value)
+    text = _CONTROL_CHARS.sub("", text)
+    text = " ".join(text.split())
+    if len(text) > limit:
+        text = text[:limit - 1].rstrip() + "…"
+    return text
+
+
+def normalize_issue(full_name: str, issue: dict) -> dict:
+    return {
+        "repo": full_name, "number": int(issue["number"]),
+        "title": clean_text(issue.get("title")), "state": clean_text(issue.get("state") or "open", 20),
+        "author": clean_text((issue.get("user") or {}).get("login"), 100),
+        "labels": [clean_text(label.get("name"), 100) for label in (issue.get("labels") or [])
+                   if isinstance(label, dict) and label.get("name")],
+        "assignees": [clean_text(user.get("login"), 100) for user in (issue.get("assignees") or [])
+                      if isinstance(user, dict) and user.get("login")],
+        "milestone": clean_text((issue.get("milestone") or {}).get("title"), 100),
+        "comments": int(issue.get("comments") or 0),
+        "created": iso_date(issue.get("created_at")), "updated": iso_date(issue.get("updated_at")),
+        "url": clean_text(issue.get("html_url"), 500), "body": issue.get("body") or "",
+    }
+
+
+def fetch_issues(full_name: str, limit: int = MAX_ISSUES_PER_REPO) -> List[dict]:
+    """Return open issues (pull requests excluded) for one repository."""
+    issues: List[dict] = []
+    page = 1
+    while len(issues) < limit:
+        try:
+            batch = gh_json(["api", "/repos/{}/issues?state=open&per_page=100&page={}".format(full_name, page)])
+        except RuntimeError as exc:
+            print("  ! skip issues for {}: {}".format(full_name, str(exc).splitlines()[0]))
+            return issues
+        if not isinstance(batch, list) or not batch:
+            break
+        issues.extend(normalize_issue(full_name, item) for item in batch
+                      if isinstance(item, dict) and "pull_request" not in item)
+        if len(batch) < 100:
+            break
+        page += 1
+    if len(issues) > limit:
+        print("  ! {} has more than {} open issues — truncating".format(full_name, limit))
+        issues = issues[:limit]
+    return issues
+
+
+def _build_issues_base(login: str) -> str:
+    return """filters:
+  and:
+    - file.hasTag("gh/issue")
+properties:
+  note.repo:
+    displayName: Repo
+  note.number:
+    displayName: "#"
+  note.title:
+    displayName: Title
+  note.labels:
+    displayName: Labels
+  note.assignees:
+    displayName: Assignees
+  note.milestone:
+    displayName: Milestone
+  note.comments:
+    displayName: 💬
+  note.updated:
+    displayName: Updated
+  note.created:
+    displayName: Created
+views:
+  - type: table
+    name: "Recently updated"
+    order:
+      - note.repo
+      - note.number
+      - note.title
+      - note.labels
+      - note.comments
+      - note.updated
+    sort:
+      - property: note.updated
+        direction: DESC
+  - type: table
+    name: "Assigned to me"
+    filters:
+      and:
+        - note.assignees.contains({login})
+    order:
+      - note.repo
+      - note.number
+      - note.title
+      - note.labels
+      - note.updated
+    sort:
+      - property: note.updated
+        direction: DESC
+  - type: table
+    name: "Most discussed"
+    order:
+      - note.repo
+      - note.number
+      - note.title
+      - note.comments
+      - note.updated
+    sort:
+      - property: note.comments
+        direction: DESC
+  - type: table
+    name: "Oldest open"
+    order:
+      - note.repo
+      - note.number
+      - note.title
+      - note.milestone
+      - note.created
+    sort:
+      - property: note.created
+        direction: ASC
+""".format(login=json.dumps(login))
+
+
+def _issue_body(body: str) -> str:
+    text = _CONTROL_CHARS.sub("", body.replace("\r\n", "\n")).strip()
+    if len(text.encode("utf-8")) > MAX_ISSUE_BODY_BYTES:
+        text = text.encode("utf-8")[:MAX_ISSUE_BODY_BYTES].decode("utf-8", "ignore").rstrip() + "\n\n_(truncated)_"
+    return text or "_No description._"
+
+
+def build_issues(context: Context, repos: Dict[str, dict], login: str) -> None:
+    issues_dir = context.path("Issues")
+    if issues_dir.exists():
+        shutil.rmtree(issues_dir)
+    issues_dir.mkdir(parents=True)
+    total = 0
+    for full in sorted(repos):
+        print("• Fetching open issues from {} …".format(full))
+        issues = fetch_issues(full)
+        for issue in issues:
+            fields = {
+                "source": "obsidian-code-atlas", "tags": ["gh/issue"], "repo": issue["repo"],
+                "number": issue["number"], "title": issue["title"], "state": issue["state"],
+                "author": issue["author"], "labels": issue["labels"], "assignees": issue["assignees"],
+                "milestone": issue["milestone"], "comments": issue["comments"],
+                "created": issue["created"], "updated": issue["updated"], "url": issue["url"],
+            }
+            note = [frontmatter(fields), "# #{} {}".format(issue["number"], issue["title"]), "",
+                    "`{}` · 🔗 [Open on GitHub]({})".format(issue["repo"], issue["url"]), "",
+                    "- **State:** {}  ·  **Author:** {}".format(issue["state"], issue["author"] or "—"),
+                    "- **Labels:** {}".format(", ".join(issue["labels"]) or "—"),
+                    "- **Assignees:** {}".format(", ".join(issue["assignees"]) or "—"),
+                    "- **Milestone:** {}".format(issue["milestone"] or "—"),
+                    "- **Comments:** {}".format(issue["comments"]),
+                    "- **Created:** {}  ·  **Updated:** {}".format(issue["created"] or "—", issue["updated"] or "—"),
+                    "", "## Description", "", _issue_body(issue["body"]), ""]
+            out = context.path("Issues", sanitize(full), "{}.md".format(issue["number"]))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("\n".join(note), encoding="utf-8")
+        total += len(issues)
+        print("  → {} open issues".format(len(issues)))
+    context.path("Issues.base").write_text(_build_issues_base(login), encoding="utf-8")
+    print("✓ Wrote {} issue notes to Issues/ and Issues.base".format(total))
+
+
 HOME_CONTENT = """---
 source: obsidian-code-atlas
 ---
@@ -594,6 +766,7 @@ Your GitHub activity, mirrored into this vault by Obsidian Code Atlas.
 - [[Activity]] — recent commits across every repo you touch
 - **Repos** — open [[Repos.base]] for the repo database (sortable / filterable)
 - **Scripts** — open [[Scripts.base]] to browse & search every source file
+- **Issues** — open [[Issues.base]] for every open issue across your repos
 
 ## Refresh
 
@@ -603,11 +776,11 @@ Regenerate everything from a terminal:
 obsidian-code-atlas refresh all --output "/path/to/your/vault/Code Atlas"
 ```
 
-Or refresh one section: `activity`, `repos`, or `scripts`. Install a daily job with
+Or refresh one section: `activity`, `repos`, `scripts`, or `issues`. Install a daily job with
 `obsidian-code-atlas scheduler install --cron --output "/path/to/your/vault/Code Atlas"`
 or use `--launchd` on macOS.
 
-> The `Repos/` and `Scripts/` folders and the `Activity.md` / `*.base` files are
+> The `Repos/`, `Scripts/` and `Issues/` folders and the `Activity.md` / `*.base` files are
 > fully managed by the tool — edits there are overwritten on the next run.
 """
 
@@ -645,6 +818,8 @@ def refresh(context: Context, section: str) -> int:
         build_repos(context, repos)
     if section in ("all", "scripts"):
         build_scripts(context, repos)
+    if section in ("all", "issues"):
+        build_issues(context, repos, login)
     if section == "all":
         write_home(context)
     print("\nDone.")
@@ -658,7 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     refresh_parser = subparsers.add_parser("refresh", help="refresh generated vault content")
     refresh_parser.add_argument("section", nargs="?", default="all",
-                                choices=["all", "activity", "repos", "scripts"])
+                                choices=["all", "activity", "repos", "scripts", "issues"])
     refresh_parser.add_argument("--output", help="directory receiving all generated content")
     refresh_parser.add_argument("--config", help="JSON configuration file")
 

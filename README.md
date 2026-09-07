@@ -15,13 +15,14 @@ Mirror your GitHub code into an [Obsidian](https://obsidian.md/) vault.
 > 
 > It brings code from all my repos into easily searchable and visually appealling `Base` and `Note` objects inside an existing Obsidian vault. It updates each morning, so scripts are always fresh.
 
-This tool generates three things from your `gh`-authenticated account:
+This tool generates four things from your `gh`-authenticated account:
 
 1. **Activity.md** — recent commits across every repo you touch.
 2. **Repos/** + **Repos.base** — one note per repo, browsable as an Obsidian Base database.
 3. **Scripts/** + **Scripts.base** — every source file you’ve written, as searchable notes.
+4. **Issues/** + **Issues.base** — every open issue in those repos (labels, assignees, milestone, comment count), one note per issue named by number (e.g. `Issues/owner-repo/42.md`).
 
-The generated `Repos/`, `Scripts/`, `Activity.md`, `GitHub Dashboard.md`, and `*.base` files are fully managed by the tool — don’t hand-edit them.
+The generated `Repos/`, `Scripts/`, `Issues/`, `Activity.md`, `GitHub Dashboard.md`, and `*.base` files are fully managed by the tool — don’t hand-edit them.
 
 ## Requirements
 
@@ -120,6 +121,7 @@ obsidian-code-atlas refresh all --output "/path/to/My Vault/Code Atlas"
 obsidian-code-atlas refresh activity --output "/path/to/My Vault/Code Atlas"
 obsidian-code-atlas refresh repos --output "/path/to/My Vault/Code Atlas"
 obsidian-code-atlas refresh scripts --output "/path/to/My Vault/Code Atlas"
+obsidian-code-atlas refresh issues --output "/path/to/My Vault/Code Atlas"
 ```
 
 The section defaults to `all`, so `obsidian-code-atlas refresh --output PATH` is also valid. Paths containing spaces are supported. `OBSIDIAN_CODE_ATLAS_OUTPUT` may supply the output path, but an explicit `--output` takes precedence. The command resolves the path to an absolute path and creates it when the refresh starts.

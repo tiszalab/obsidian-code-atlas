@@ -162,6 +162,107 @@ class TestScriptsBase(unittest.TestCase):
         self.assertIn('name: "Elixir: Foo"', base)
 
 
+def _issue(number, **overrides):
+    issue = {
+        "number": number, "title": "Issue {}".format(number), "state": "open",
+        "user": {"login": "alice"}, "labels": [{"name": "bug"}], "assignees": [],
+        "milestone": None, "comments": 0, "created_at": "2024-01-02T03:04:05Z",
+        "updated_at": "2024-02-03T04:05:06Z", "html_url": "https://github.com/alice/demo/issues/{}".format(number),
+        "body": "Something is broken.",
+    }
+    issue.update(overrides)
+    return issue
+
+
+class TestIssues(unittest.TestCase):
+    REPOS = {"alice/demo": {"full_name": "alice/demo", "url": "https://github.com/alice/demo"}}
+
+    def test_clean_text_flattens_and_truncates(self):
+        self.assertEqual(cli.clean_text("  multi\nline\ttitle\x00 "), "multi line title")
+        self.assertEqual(cli.clean_text(None), "")
+        long = cli.clean_text("x" * 500, limit=10)
+        self.assertEqual(len(long), 10)
+        self.assertTrue(long.endswith("…"))
+
+    def test_normalize_issue_sanitizes_every_frontmatter_field(self):
+        raw = _issue(7, title="Fix: \"quotes\"\nand --- newlines",
+                     labels=[{"name": "needs: triage\n"}, {"name": ""}, "junk"],
+                     assignees=[{"login": "bob\x07"}], milestone={"title": "v1.0\r\n"},
+                     comments="3", user=None)
+        issue = cli.normalize_issue("alice/demo", raw)
+        self.assertEqual(issue["title"], 'Fix: "quotes" and --- newlines')
+        self.assertEqual(issue["labels"], ["needs: triage"])
+        self.assertEqual(issue["assignees"], ["bob"])
+        self.assertEqual(issue["milestone"], "v1.0")
+        self.assertEqual(issue["comments"], 3)
+        self.assertEqual(issue["author"], "")
+        self.assertEqual(issue["created"], "2024-01-02")
+        rendered = cli.frontmatter({"title": issue["title"], "labels": issue["labels"]})
+        self.assertIn('title: "Fix: \\"quotes\\" and --- newlines"', rendered)
+        self.assertNotIn("\n---\n", rendered[3:-4])
+
+    def test_fetch_issues_paginates_and_drops_pull_requests(self):
+        pages = [[_issue(n) for n in range(1, 101)],
+                 [_issue(101), _issue(102, pull_request={"url": "x"})]]
+        calls = []
+
+        def fake_gh_json(args):
+            calls.append(args[1])
+            return pages.pop(0)
+
+        with mock.patch.object(cli, "gh_json", side_effect=fake_gh_json):
+            issues = cli.fetch_issues("alice/demo")
+        self.assertEqual(len(issues), 101)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("state=open", calls[0])
+        self.assertIn("page=2", calls[1])
+        self.assertNotIn(102, [issue["number"] for issue in issues])
+
+    def test_fetch_issues_skips_repo_on_gh_failure(self):
+        with mock.patch.object(cli, "gh_json", side_effect=RuntimeError("gh api failed:\nHTTP 404")), \
+             mock.patch("sys.stdout"):
+            self.assertEqual(cli.fetch_issues("alice/gone"), [])
+
+    def test_build_issues_writes_numbered_notes_and_base(self):
+        raw = [_issue(42, labels=[{"name": "bug"}, {"name": "help wanted"}],
+                      assignees=[{"login": "alice"}], milestone={"title": "v2"}, comments=5,
+                      body="---\nnot frontmatter\n---\r\nDetails here."),
+               _issue(7, body="")]
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(cli, "gh_json", return_value=raw), mock.patch("sys.stdout"):
+            output = Path(temporary).resolve()
+            context = cli.Context(output, {})
+            cli.build_issues(context, self.REPOS, "alice")
+            note = (output / "Issues" / "alice-demo" / "42.md").read_text(encoding="utf-8")
+            empty = (output / "Issues" / "alice-demo" / "7.md").read_text(encoding="utf-8")
+            base = (output / "Issues.base").read_text(encoding="utf-8")
+            names = sorted(path.name for path in (output / "Issues" / "alice-demo").iterdir())
+        self.assertEqual(names, ["42.md", "7.md"])
+        self.assertTrue(note.startswith("---\nsource: \"obsidian-code-atlas\"\ntags:\n  - \"gh/issue\"\n"))
+        for line in ('repo: "alice/demo"', "number: 42", 'title: "Issue 42"', 'state: "open"',
+                     '  - "bug"', '  - "help wanted"', '  - "alice"', 'milestone: "v2"',
+                     "comments: 5", "created: 2024-01-02", "updated: 2024-02-03"):
+            self.assertIn(line, note)
+        self.assertIn("# #42 Issue 42", note)
+        self.assertIn("## Description\n\n---\nnot frontmatter\n---\nDetails here.", note)
+        self.assertNotIn("\r", note)
+        self.assertIn("_No description._", empty)
+        self.assertIn('file.hasTag("gh/issue")', base)
+        self.assertIn('note.assignees.contains("alice")', base)
+        self.assertIn('name: "Recently updated"', base)
+
+    def test_build_issues_replaces_previous_output(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(cli, "gh_json", return_value=[]), mock.patch("sys.stdout"):
+            output = Path(temporary).resolve()
+            stale = output / "Issues" / "alice-demo" / "999.md"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("stale", encoding="utf-8")
+            cli.build_issues(cli.Context(output, {}), self.REPOS, "alice")
+            self.assertFalse(stale.exists())
+            self.assertTrue((output / "Issues.base").is_file())
+
+
 class TestCLI(unittest.TestCase):
     def run_refresh(self, output, section="all", environment=None):
         with mock.patch.object(cli, "whoami", return_value="alice"), \
@@ -175,7 +276,9 @@ class TestCLI(unittest.TestCase):
             "activity": {"Activity.md"},
             "repos": {"Repos", "Repos.base"},
             "scripts": {"Scripts", "Scripts.base"},
-            "all": {"Activity.md", "Repos", "Repos.base", "Scripts", "Scripts.base", "GitHub Dashboard.md"},
+            "issues": {"Issues", "Issues.base"},
+            "all": {"Activity.md", "Repos", "Repos.base", "Scripts", "Scripts.base",
+                    "Issues", "Issues.base", "GitHub Dashboard.md"},
         }
         for section, names in expected.items():
             with self.subTest(section=section), tempfile.TemporaryDirectory() as temporary:

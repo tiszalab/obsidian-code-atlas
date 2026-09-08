@@ -31,7 +31,36 @@ The generated `Repos/`, `Scripts/`, `Issues/`, `Activity.md`, `GitHub Dashboard.
 
 ## Installation
 
-Install the command from a local clone with pip:
+Install from PyPI with pip:
+
+```bash
+python3 -m pip install obsidian-code-atlas
+```
+
+For an isolated command-line installation, use [pipx](https://pipx.pypa.io/):
+
+```bash
+pipx install obsidian-code-atlas
+```
+
+Upgrade an existing installation:
+
+```bash
+python3 -m pip install --upgrade obsidian-code-atlas
+# or, for pipx:
+pipx upgrade obsidian-code-atlas
+```
+
+<details>
+<summary>Installing from source</summary>
+
+Install the latest development version directly from the Git URL:
+
+```bash
+python3 -m pip install git+https://github.com/tiszalab/obsidian-code-atlas.git
+```
+
+Or from a local clone:
 
 ```bash
 git clone https://github.com/tiszalab/obsidian-code-atlas.git
@@ -39,25 +68,7 @@ cd obsidian-code-atlas
 python3 -m pip install .
 ```
 
-For an isolated command-line installation, use pipx:
-
-```bash
-pipx install ./obsidian-code-atlas
-```
-
-You can also install directly from the Git URL if your pip supports it:
-
-```bash
-python3 -m pip install git+https://github.com/tiszalab/obsidian-code-atlas.git
-```
-
-Upgrade an existing installation from a newer checkout:
-
-```bash
-python3 -m pip install --upgrade .
-# or, for pipx:
-pipx upgrade --editable obsidian-code-atlas
-```
+</details>
 
 The application code lives in your Python environment; generated Obsidian notes live in the vault you choose below.
 
@@ -209,3 +220,7 @@ python3 -m pip uninstall obsidian-code-atlas
 # or, for pipx:
 pipx uninstall obsidian-code-atlas
 ```
+
+## License
+
+[MIT](LICENSE) © Michael Tisza

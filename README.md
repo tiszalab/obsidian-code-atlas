@@ -156,6 +156,10 @@ Create `obsidian-code-atlas.json` in the output directory using this structure (
 
 ```json
 {
+  "excluded_repos": [
+    "owner/private-repo",
+    "organization/archived-repo"
+  ],
   "script_extensions": {
     ".ex": {"label": "Elixir", "fence": "elixir"},
     ".exs": {"label": "Elixir Script", "fence": "elixir"},
@@ -164,58 +168,21 @@ Create `obsidian-code-atlas.json` in the output directory using this structure (
 }
 ```
 
-A value of `null` removes an extension. Configuration is selected in this exact order:
+`excluded_repos` contains case-insensitive `owner/repository` names. Excluded repositories are omitted from activity, repository, script, and issue output. A `script_extensions` value of `null` removes an extension. A configuration file that cannot be parsed or validated aborts the command with an error instead of falling back to the defaults. Configuration is selected in this exact order:
 
 1. explicit `--config PATH`;
 2. `OBSIDIAN_CODE_ATLAS_CONFIG`;
-3. legacy `GH_PULLER_CONFIG`;
-4. `obsidian-code-atlas.json` in the output directory;
-5. legacy `gh_puller.json` in the output directory;
-6. built-in defaults.
+3. `obsidian-code-atlas.json` in the output directory;
+4. built-in defaults.
 
-Extension environment overrides remain compatible and are applied after the selected file:
+Extension environment overrides are applied after the selected file:
 
 ```bash
 OBSIDIAN_CODE_ATLAS_EXTENSIONS=".ex:Elixir:elixir,.exs:Elixir:elixir,-.yml" \
   obsidian-code-atlas refresh all --output "/path/to/My Vault/Code Atlas"
 ```
 
-The legacy `GH_PULLER_EXTENSIONS` name is supported. Format is `.ext:Label:fence`; two parts (`.ext:Label`) and one part (`.ext`) are also accepted, and a leading `-` removes an extension.
-
-## Migration for existing clone-inside-vault users
-
-Older setups cloned this repository directly into an Obsidian vault and ran `gh_puller.py`, `refresh.sh`, or `setup.sh` from there. That still works as a deprecated compatibility path, but the recommended setup is now:
-
-1. Remove any old scheduler installed by `setup.sh`:
-   ```bash
-   ./setup.sh --uninstall
-   ```
-2. Install the package from a separate checkout:
-   ```bash
-   git clone https://github.com/tiszalab/obsidian-code-atlas.git
-   cd obsidian-code-atlas
-   python3 -m pip install .
-   ```
-3. Initialize your vault with the new command:
-   ```bash
-   obsidian-code-atlas init "/path/to/My Vault" --output "Code Atlas"
-   ```
-
-The generated dashboard instructions now point to the installed package command instead of a repository checkout.
-
-## Development-checkout compatibility
-
-From a repository checkout, the legacy commands still write to the repository directory:
-
-```bash
-python3 gh_puller.py all
-./refresh.sh all
-./setup.sh --launchd
-./setup.sh --cron
-./setup.sh --uninstall
-```
-
-These checkout-only scheduler helpers, `crontab.example`, and `obsidian-code-atlas.plist.template` are deprecated compatibility paths. New installations should use `obsidian-code-atlas init` and `obsidian-code-atlas scheduler`; the shell files and templates will be removed in a later migration.
+The format is `.ext:Label:fence`; two parts (`.ext:Label`) and one part (`.ext`) are also accepted, and a leading `-` removes an extension.
 
 ## File layout
 
@@ -229,11 +196,6 @@ These checkout-only scheduler helpers, `crontab.example`, and `obsidian-code-atl
 │   ├── doctor.py
 │   ├── init.py
 │   └── scheduler.py
-├── gh_puller.py                  # thin legacy checkout wrapper
-├── refresh.sh                    # scheduler-friendly wrapper
-├── setup.sh                      # launchd / cron installer (deprecated)
-├── obsidian-code-atlas.plist.template
-├── crontab.example
 └── obsidian-code-atlas.json.example
 ```
 
@@ -247,5 +209,3 @@ python3 -m pip uninstall obsidian-code-atlas
 # or, for pipx:
 pipx uninstall obsidian-code-atlas
 ```
-
-For a legacy scheduled checkout, run `./setup.sh --uninstall` before deleting the checkout directory.

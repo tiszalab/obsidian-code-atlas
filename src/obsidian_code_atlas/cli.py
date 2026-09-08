@@ -16,7 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
 from . import __version__
 from . import scheduler
@@ -111,48 +111,74 @@ def _parse_env_extensions(value: str) -> Dict[str, Optional[Tuple[str, str]]]:
 
 def select_config_path(output: Path, explicit: Optional[str], env: Mapping[str, str]) -> Optional[Path]:
     """Select configuration using the documented precedence."""
-    configured = explicit if explicit is not None else (
-        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG") or None
-    )
+    configured = explicit if explicit is not None else env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or None
     if configured is not None:
         return Path(configured).expanduser().resolve()
-    for name in ("obsidian-code-atlas.json", "gh_puller.json"):
-        candidate = output / name
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = output / "obsidian-code-atlas.json"
+    return candidate if candidate.is_file() else None
 
 
-def load_languages(output: Path, explicit_config: Optional[str] = None,
-                   env: Optional[Mapping[str, str]] = None) -> LanguageMap:
+class ConfigError(ValueError):
+    """The selected configuration file is unreadable or malformed.
+
+    Configuration errors are fatal on purpose: silently falling back to the
+    defaults would, for example, mirror every repository the user meant to
+    exclude.
+    """
+
+
+def _parse_config(config_path: Path, langs: LanguageMap) -> FrozenSet[str]:
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ConfigError("could not load {}: {}".format(config_path, exc))
+    if not isinstance(config, dict):
+        raise ConfigError("{}: configuration must be a JSON object".format(config_path))
+    if "script_extensions" in config:
+        extensions = config["script_extensions"]
+        if not isinstance(extensions, dict):
+            raise ConfigError("{}: script_extensions must be a JSON object".format(config_path))
+        try:
+            parsed = _parse_languages(extensions)
+        except ValueError as exc:
+            raise ConfigError("{}: {}".format(config_path, exc))
+        for ext, value in parsed.items():
+            if value is None:
+                langs.pop(ext, None)
+            else:
+                langs[ext] = value
+    excluded_repos: FrozenSet[str] = frozenset()
+    if "excluded_repos" in config:
+        names = config["excluded_repos"]
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise ConfigError("{}: excluded_repos must be a JSON array of repository names".format(config_path))
+        excluded_repos = frozenset(name.strip().lower() for name in names if name.strip())
+    return excluded_repos
+
+
+def load_config(output: Path, explicit_config: Optional[str] = None,
+                env: Optional[Mapping[str, str]] = None) -> Tuple[LanguageMap, FrozenSet[str]]:
+    """Return ``(languages, excluded_repos)`` for the selected configuration.
+
+    Raises ``FileNotFoundError`` when an explicitly selected file is missing
+    and ``ConfigError`` when the file cannot be parsed or validated.
+    """
     environment = os.environ if env is None else env
     langs = _default_languages()
+    excluded_repos: FrozenSet[str] = frozenset()
     config_path = select_config_path(output, explicit_config, environment)
     if config_path is not None:
         if not config_path.is_file():
             raise FileNotFoundError("configuration file does not exist or is not a file: {}".format(config_path))
-        try:
-            config = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(config, dict) and "script_extensions" in config:
-                extensions = config["script_extensions"]
-                if not isinstance(extensions, dict):
-                    raise ValueError("script_extensions must be a JSON object")
-                for ext, value in _parse_languages(extensions).items():
-                    if value is None:
-                        langs.pop(ext, None)
-                    else:
-                        langs[ext] = value
-        except Exception as exc:
-            print("Warning: could not load {}: {}".format(config_path, exc), file=sys.stderr)
-    extension_env = environment.get("OBSIDIAN_CODE_ATLAS_EXTENSIONS") or environment.get(
-        "GH_PULLER_EXTENSIONS", "")
+        excluded_repos = _parse_config(config_path, langs)
+    extension_env = environment.get("OBSIDIAN_CODE_ATLAS_EXTENSIONS", "")
     if extension_env:
         for ext, value in _parse_env_extensions(extension_env).items():
             if value is None:
                 langs.pop(ext, None)
             else:
                 langs[ext] = value
-    return langs
+    return langs, excluded_repos
 
 
 class ManagedPathError(ValueError):
@@ -163,6 +189,7 @@ class ManagedPathError(ValueError):
 class Context:
     output: Path
     languages: LanguageMap
+    excluded_repos: FrozenSet[str] = frozenset()
 
     def path(self, *parts: str) -> Path:
         candidate = self.output.joinpath(*parts).resolve()
@@ -304,11 +331,18 @@ def get_owned_repos() -> Dict[str, dict]:
     return repos
 
 
-def search_commits(login: str, limit: int) -> List[dict]:
+def search_commits(login: str, limit: int, excluded_repos: FrozenSet[str] = frozenset()) -> List[dict]:
+    """Return up to ``limit`` recent commits by ``login``, newest first.
+
+    Commits in ``excluded_repos`` are dropped page by page *before* they count
+    toward ``limit``, so excluding a busy repository does not shrink the
+    activity window for the repositories that remain.
+    """
     print("• Searching recent commits by {} …".format(login))
-    items = []
+    items: List[dict] = []
     page = 1
     total = "?"
+    skipped = 0
     while len(items) < limit:
         data = json.loads(str(gh([
             "api", "-H", "Accept: application/vnd.github.cloak-preview+json",
@@ -318,12 +352,17 @@ def search_commits(login: str, limit: int) -> List[dict]:
         batch = data.get("items", [])
         if not batch:
             break
-        items.extend(batch)
+        for commit in batch:
+            if commit["repository"]["full_name"].lower() in excluded_repos:
+                skipped += 1
+            else:
+                items.append(commit)
         if len(batch) < 100:
             break
         page += 1
     items = items[:limit]
-    print("  → {} commits (of {} total)".format(len(items), total))
+    print("  → {} commits (of {} total{})".format(
+        len(items), total, ", {} in excluded repos".format(skipped) if skipped else ""))
     return items
 
 
@@ -800,8 +839,11 @@ def refresh(context: Context, section: str) -> int:
     scope = {login} | orgs
     print("Authenticated as {}".format(login))
     print("Orgs in mirror scope: {}\n".format(", ".join(sorted(orgs)) or "(none)"))
-    repos = get_owned_repos()
-    commits = search_commits(login, COMMIT_LIMIT)
+    repos = {
+        full: repo for full, repo in get_owned_repos().items()
+        if full.lower() not in context.excluded_repos
+    }
+    commits = search_commits(login, COMMIT_LIMIT, context.excluded_repos)
     for full in sorted(repos_from_commits(commits)):
         if full in repos:
             continue
@@ -893,9 +935,7 @@ def _explicit_config_path(explicit: Optional[str], env: Mapping[str, str]) -> Op
     file that was merely *found*, or deleting/renaming it later turns a soft
     default into a hard failure every night.
     """
-    configured = explicit if explicit is not None else (
-        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG") or None
-    )
+    configured = explicit if explicit is not None else env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or None
     if configured is None:
         return None
     return Path(configured).expanduser().resolve()
@@ -963,10 +1003,10 @@ def _run_init(args: argparse.Namespace, environment: Mapping[str, str],
         )
     except init.InitError as exc:
         parser.error(str(exc))
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ConfigError) as exc:
         # The initial refresh loads configuration, which may come from
         # OBSIDIAN_CODE_ATLAS_CONFIG rather than --config; init only validates
-        # the flag, so a stale env var surfaces here.
+        # the flag, so a stale env var or malformed file surfaces here.
         parser.error(str(exc))
     except ManagedPathError as exc:
         print("Cannot write generated files: {}".format(exc), file=sys.stderr)
@@ -1013,10 +1053,10 @@ def main(argv: Optional[List[str]] = None, env: Optional[Mapping[str, str]] = No
     if not output.is_dir():
         parser.error("output path is not a directory: {}".format(output))
     try:
-        languages = load_languages(output, args.config, environment)
-    except FileNotFoundError as exc:
+        languages, excluded_repos = load_config(output, args.config, environment)
+    except (FileNotFoundError, ConfigError) as exc:
         parser.error(str(exc))
-    context = Context(output=output, languages=languages)
+    context = Context(output=output, languages=languages, excluded_repos=excluded_repos)
     try:
         return refresh(context, args.section)
     except ManagedPathError as exc:

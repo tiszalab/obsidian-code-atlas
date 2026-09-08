@@ -218,8 +218,9 @@ def run_init(
     refresh_rc = 0
     if not no_refresh:
         from . import cli
-        languages = cli.load_languages(output, str(config_path) if config_path else None, environment)
-        context = cli.Context(output=output, languages=languages)
+        languages, excluded_repos = cli.load_config(
+            output, str(config_path) if config_path else None, environment)
+        context = cli.Context(output=output, languages=languages, excluded_repos=excluded_repos)
         refresh_rc = cli.refresh(context, "all")
 
     if scheduler_type != "none":

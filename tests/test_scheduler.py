@@ -62,22 +62,6 @@ class TestCronScheduler(unittest.TestCase):
         self.assertIn(scheduler.cron_marker(self.two), self.state.contents)
         self.assertFalse(scheduler.uninstall_cron(self.one))
 
-    def test_legacy_entry_is_removed_regardless_of_checkout_path(self):
-        # The pre-CLI scheduler (setup.sh) points refresh.sh at the checkout
-        # it was installed from, which is unrelated to any --output vault.
-        # Migrating a job for `self.two` must still clean it up even though
-        # its path has nothing to do with either vault.
-        checkout_refresh = self.root / "src" / "obsidian-code-atlas" / "refresh.sh"
-        two_line = scheduler.cron_line(self.two, executable="/opt/atlas/bin/python3")
-        self.state.contents = (
-            "# gh_puller auto-refresh\n0 8 * * * '{}' all\n".format(checkout_refresh) +
-            two_line + "\n"
-        )
-        self.assertIn(str(checkout_refresh), scheduler.find_cron_entry(self.state.contents, self.one))
-        self.assertTrue(scheduler.uninstall_cron(self.one))
-        self.assertNotIn(str(checkout_refresh), self.state.contents)
-        self.assertIn(scheduler.cron_marker(self.two), self.state.contents)
-
     def test_marker_text_inside_unrelated_comment_is_preserved(self):
         unrelated = "# keep {} because this is explanatory text\n".format(scheduler.cron_marker(self.one))
         self.state.contents = unrelated
@@ -105,25 +89,6 @@ class TestCronScheduler(unittest.TestCase):
         self.assertIn("/usr/bin", line)
         # The PATH assignment must come before the command it applies to.
         self.assertLess(line.index("PATH="), line.index("/opt/atlas/bin/python3"))
-
-    def test_cron_line_propagates_pythonpath_for_checkout_only_installs(self):
-        # setup.sh exports PYTHONPATH=<checkout>/src; without it the nightly
-        # job cannot import obsidian_code_atlas at all.
-        line = scheduler.cron_line(self.one, executable="/opt/atlas/bin/python3",
-                                   environment={"PATH": "/usr/bin", "PYTHONPATH": "/checkout/src"})
-        self.assertIn("PYTHONPATH=/checkout/src", line)
-        self.assertLess(line.index("PYTHONPATH="), line.index("/opt/atlas/bin/python3"))
-
-    def test_cron_line_omits_pythonpath_when_the_caller_has_none(self):
-        line = scheduler.cron_line(self.one, executable="/opt/atlas/bin/python3",
-                                   environment={"PATH": "/usr/bin"})
-        self.assertNotIn("PYTHONPATH", line)
-
-    def test_cron_line_quotes_a_pythonpath_containing_spaces(self):
-        line = scheduler.cron_line(self.one, executable="/opt/atlas/bin/python3",
-                                   environment={"PATH": "/usr/bin",
-                                                "PYTHONPATH": "/my checkout/src"})
-        self.assertIn("PYTHONPATH='/my checkout/src'", line)
 
     def test_cron_line_escapes_percent_so_cron_does_not_truncate_it(self):
         output = (self.root / "100% Notes" / "Code Atlas").resolve()
@@ -155,19 +120,11 @@ class TestLaunchdScheduler(unittest.TestCase):
         self.assertEqual(Path(parsed["StandardOutPath"]).parent, self.output)
         self.assertNotIn("site-packages", parsed["StandardOutPath"])
 
-    def test_payload_propagates_pythonpath_for_checkout_only_installs(self):
-        payload = scheduler.launchd_payload(
-            self.output, executable="/opt/atlas/bin/python3",
-            environment={"PATH": "/usr/bin:/bin", "PYTHONPATH": "/checkout/src"})
-        parsed = plistlib.loads(plistlib.dumps(payload))
-        self.assertEqual(parsed["EnvironmentVariables"]["PYTHONPATH"], "/checkout/src")
-        self.assertEqual(parsed["EnvironmentVariables"]["PATH"], "/usr/bin:/bin")
-
-    def test_payload_omits_pythonpath_when_the_caller_has_none(self):
+    def test_payload_includes_path_environment(self):
         payload = scheduler.launchd_payload(
             self.output, executable="/opt/atlas/bin/python3",
             environment={"PATH": "/usr/bin:/bin"})
-        self.assertNotIn("PYTHONPATH", payload["EnvironmentVariables"])
+        self.assertEqual(payload["EnvironmentVariables"], {"PATH": "/usr/bin:/bin"})
 
     def test_outputs_have_distinct_labels_and_plist_paths(self):
         other = (self.root / "Other Vault" / "Code Atlas").resolve()
@@ -234,43 +191,6 @@ class TestLaunchdScheduler(unittest.TestCase):
              self.assertRaisesRegex(scheduler.SchedulerError, "Input/output error"):
             scheduler.uninstall_launchd(self.output, self.home)
         self.assertTrue(path.exists())
-
-    def _write_legacy_plist(self, label):
-        legacy_path = self.home / "Library" / "LaunchAgents" / "{}.plist".format(label)
-        legacy_path.parent.mkdir(parents=True, exist_ok=True)
-        legacy_payload = {
-            "Label": label,
-            "ProgramArguments": ["/bin/bash", str(self.root / "checkout" / "refresh.sh"), "all"],
-        }
-        legacy_path.write_bytes(plistlib.dumps(legacy_payload))
-        return legacy_path
-
-    def test_install_purges_a_legacy_setup_sh_launchagent(self):
-        legacy_path = self._write_legacy_plist("com.obsidian-code-atlas.deadbeef")
-        completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(scheduler.platform, "system", return_value="Darwin"), \
-             mock.patch.object(scheduler, "_run", return_value=completed):
-            scheduler.install_launchd(self.output, self.home, executable="/opt/atlas/bin/python3")
-        self.assertFalse(legacy_path.exists())
-
-    def test_uninstall_purges_a_legacy_gh_puller_launchagent(self):
-        legacy_path = self._write_legacy_plist("com.ghpuller.gh_puller.deadbeef")
-        completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(scheduler.platform, "system", return_value="Darwin"), \
-             mock.patch.object(scheduler, "_run", return_value=completed):
-            self.assertTrue(scheduler.uninstall_launchd(self.output, self.home))
-        self.assertFalse(legacy_path.exists())
-
-    def test_legacy_purge_ignores_our_own_launchagents(self):
-        other = (self.root / "Other Vault" / "Code Atlas").resolve()
-        other_path = scheduler.launchd_path(other, self.home)
-        other_path.parent.mkdir(parents=True)
-        other_path.write_bytes(plistlib.dumps(scheduler.launchd_payload(other)))
-        completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(scheduler.platform, "system", return_value="Darwin"), \
-             mock.patch.object(scheduler, "_run", return_value=completed):
-            scheduler.install_launchd(self.output, self.home, executable="/opt/atlas/bin/python3")
-        self.assertTrue(other_path.exists())
 
 
 class TestSchedulerCLI(unittest.TestCase):

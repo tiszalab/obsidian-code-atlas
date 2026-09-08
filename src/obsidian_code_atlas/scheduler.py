@@ -14,11 +14,9 @@ from typing import List, Mapping, Optional, Sequence, Tuple
 
 SCHEDULE = "0 8 * * *"
 CALENDAR_INTERVAL = {"Hour": 8, "Minute": 0}
-LEGACY_MARKERS = ("# obsidian-code-atlas auto-refresh", "# gh_puller auto-refresh")
-LEGACY_LAUNCHD_GLOBS = ("com.obsidian-code-atlas.*.plist", "com.ghpuller.*.plist")
 # cron runs jobs with a minimal PATH (typically /usr/bin:/bin), which does not
-# include Homebrew's install prefixes. Prepend them (ahead of the caller's
-# PATH, mirroring refresh.sh) so tools like `gh` can still be found.
+# include Homebrew's install prefixes. Prepend them ahead of the caller's PATH
+# so tools like `gh` can still be found.
 CRON_PATH_PREFIXES = ("/opt/homebrew/bin", "/usr/local/bin")
 CRON_PATH_SUFFIXES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 _BENIGN_BOOTOUT_ERRORS = ("no such process", "could not find", "not loaded", "does not exist")
@@ -63,26 +61,9 @@ def _escape_cron_percent(text: str) -> str:
     return text.replace("%", "\\%")
 
 
-def scheduled_pythonpath(environment: Optional[Mapping[str, str]] = None) -> Optional[str]:
-    """PYTHONPATH the scheduled job needs, or ``None`` when it is unnecessary.
-
-    A checkout-only install (setup.sh, which exports PYTHONPATH=<checkout>/src)
-    has no importable `obsidian_code_atlas` on the default sys.path, so a job
-    installed without this would fail every night with ImportError. Propagate
-    the caller's PYTHONPATH so the scheduled interpreter resolves the package
-    exactly the way the installing shell did.
-    """
-    env = os.environ if environment is None else environment
-    value = env.get("PYTHONPATH")
-    return value or None
-
-
 def cron_line(output: Path, config: Optional[Path] = None, executable: Optional[str] = None,
               environment: Optional[Mapping[str, str]] = None) -> str:
     assignments = ["PATH={}".format(shlex.quote(cron_path_value(environment)))]
-    pythonpath = scheduled_pythonpath(environment)
-    if pythonpath:
-        assignments.append("PYTHONPATH={}".format(shlex.quote(pythonpath)))
     command = "{} {}".format(" ".join(assignments),
                              shlex.join(scheduled_arguments(output, config, executable)))
     log_path = shlex.quote(str(output.resolve() / "refresh.log"))
@@ -118,14 +99,6 @@ def write_crontab(contents: str) -> None:
                                                                       "crontab exited {}".format(result.returncode)))
 
 
-def _legacy_refresh_matches(line: str) -> bool:
-    # The pre-CLI scheduler (setup.sh) points at "<checkout>/refresh.sh", not
-    # at anything under the current --output vault, so matching legacy
-    # entries has to key off the marker/refresh.sh reference alone rather
-    # than the output path.
-    return "refresh.sh" in line
-
-
 def _has_marker(line: str, marker: str) -> bool:
     return line.rstrip().endswith(marker)
 
@@ -140,14 +113,6 @@ def strip_cron_entry(contents: str, output: Path) -> str:
         if _has_marker(line, marker):
             index += 1
             continue
-        if any(_has_marker(line, legacy) for legacy in LEGACY_MARKERS):
-            if _legacy_refresh_matches(line):
-                index += 1
-                continue
-            if line.strip() in LEGACY_MARKERS and index + 1 < len(lines) and \
-                    _legacy_refresh_matches(lines[index + 1]):
-                index += 2
-                continue
         kept.append(line)
         index += 1
     return "".join(kept)
@@ -206,9 +171,6 @@ def launchd_payload(output: Path, config: Optional[Path] = None,
     variables = {}
     if env.get("PATH"):
         variables["PATH"] = env["PATH"]
-    pythonpath = scheduled_pythonpath(env)
-    if pythonpath:
-        variables["PYTHONPATH"] = pythonpath
     if variables:
         payload["EnvironmentVariables"] = variables
     return payload
@@ -216,32 +178,6 @@ def launchd_payload(output: Path, config: Optional[Path] = None,
 
 def _launchd_domain() -> str:
     return "gui/{}".format(os.getuid())
-
-
-def _is_legacy_launchd_plist(path: Path) -> bool:
-    try:
-        with path.open("rb") as handle:
-            payload = plistlib.load(handle)
-    except (OSError, plistlib.InvalidFileException):
-        return False
-    arguments = payload.get("ProgramArguments") or []
-    # The checkout-bound scheduler (setup.sh) runs "refresh.sh"; anything
-    # else sharing our label prefixes is one of our own installs.
-    return any("refresh.sh" in str(argument) for argument in arguments)
-
-
-def _legacy_launchd_paths(home: Path, current: Path) -> List[Path]:
-    agents_dir = home / "Library" / "LaunchAgents"
-    if not agents_dir.is_dir():
-        return []
-    found: List[Path] = []
-    for pattern in LEGACY_LAUNCHD_GLOBS:
-        for path in sorted(agents_dir.glob(pattern)):
-            if path == current or not path.is_file():
-                continue
-            if _is_legacy_launchd_plist(path):
-                found.append(path)
-    return found
 
 
 def _remove_launchd_plist(path: Path, best_effort: bool) -> None:
@@ -295,8 +231,6 @@ def install_launchd(output: Path, home: Path, config: Optional[Path] = None,
         path.unlink(missing_ok=True)
         raise SchedulerError("cannot load LaunchAgent {}: {}".format(
             path, result.stderr.strip() or "launchctl exited {}".format(result.returncode)))
-    for legacy in _legacy_launchd_paths(home, path):
-        _remove_launchd_plist(legacy, best_effort=True)
     return path
 
 
@@ -306,22 +240,15 @@ def uninstall_launchd(output: Path, home: Path) -> bool:
     if path.is_file():
         _remove_launchd_plist(path, best_effort=False)
         removed = True
-    for legacy in _legacy_launchd_paths(home, path):
-        _remove_launchd_plist(legacy, best_effort=True)
-        removed = True
     return removed
 
 
 def find_cron_entry(contents: str, output: Path) -> Optional[str]:
     lines = contents.splitlines()
     marker = cron_marker(output)
-    for index, line in enumerate(lines):
-        if _has_marker(line, marker) or (any(_has_marker(line, legacy) for legacy in LEGACY_MARKERS) and
-                                        _legacy_refresh_matches(line)):
+    for line in lines:
+        if _has_marker(line, marker):
             return line
-        if line.strip() in LEGACY_MARKERS and index + 1 < len(lines) and \
-                _legacy_refresh_matches(lines[index + 1]):
-            return lines[index + 1]
     return None
 
 

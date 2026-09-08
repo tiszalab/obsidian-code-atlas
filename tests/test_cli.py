@@ -1,6 +1,7 @@
+import contextlib
+import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -67,80 +68,97 @@ class TestLanguageConfig(unittest.TestCase):
     def test_config_precedence_is_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
-            output_new = output / "obsidian-code-atlas.json"
-            output_old = output / "gh_puller.json"
-            env_new = output / "env-new.json"
-            env_old = output / "env-old.json"
+            output_config = output / "obsidian-code-atlas.json"
+            environment_config = output / "environment.json"
             explicit = output / "explicit.json"
-            for path in (output_new, output_old, env_new, env_old, explicit):
+            for path in (output_config, environment_config, explicit):
                 path.write_text("{}", encoding="utf-8")
-            environment = {
-                "OBSIDIAN_CODE_ATLAS_CONFIG": str(env_new),
-                "GH_PULLER_CONFIG": str(env_old),
-            }
+            environment = {"OBSIDIAN_CODE_ATLAS_CONFIG": str(environment_config)}
             self.assertEqual(cli.select_config_path(output, str(explicit), environment), explicit.resolve())
-            self.assertEqual(cli.select_config_path(output, None, environment), env_new.resolve())
-            self.assertEqual(cli.select_config_path(output, None, {"GH_PULLER_CONFIG": str(env_old)}), env_old.resolve())
-            self.assertEqual(cli.select_config_path(output, None, {}), output_new)
-            output_new.unlink()
-            self.assertEqual(cli.select_config_path(output, None, {}), output_old)
-            output_old.unlink()
+            self.assertEqual(cli.select_config_path(output, None, environment), environment_config.resolve())
+            self.assertEqual(cli.select_config_path(output, None, {}), output_config)
+            output_config.unlink()
             self.assertIsNone(cli.select_config_path(output, None, {}))
 
-    def test_load_languages_uses_legacy_output_config(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary)
-            (output / "gh_puller.json").write_text(
-                json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
-            self.assertEqual(cli.load_languages(output, env={})[".ex"], ("Elixir", "elixir"))
-
-    def test_load_languages_rejects_missing_selected_config(self):
+    def test_load_config_rejects_missing_selected_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             missing = Path(temporary) / "missing.json"
             with self.assertRaisesRegex(FileNotFoundError, "configuration file"):
-                cli.load_languages(Path(temporary), str(missing), {})
+                cli.load_config(Path(temporary), str(missing), {})
 
     def test_empty_config_environment_uses_output_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             (output / "obsidian-code-atlas.json").write_text(
                 json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
-            languages = cli.load_languages(output, env={
-                "OBSIDIAN_CODE_ATLAS_CONFIG": "",
-                "GH_PULLER_CONFIG": "",
-            })
+            languages, _ = cli.load_config(output, env={"OBSIDIAN_CODE_ATLAS_CONFIG": ""})
         self.assertEqual(languages[".ex"], ("Elixir", "elixir"))
 
-    def test_malformed_script_extensions_warns(self):
+    def test_malformed_script_extensions_is_an_error(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             config = output / "config.json"
             config.write_text(json.dumps({"script_extensions": []}), encoding="utf-8")
-            with mock.patch("sys.stderr") as stderr:
-                languages = cli.load_languages(output, str(config), {})
-        self.assertEqual(languages, cli._default_languages())
-        self.assertIn("script_extensions must be a JSON object",
-                      "".join(call.args[0] for call in stderr.write.call_args_list))
+            with self.assertRaisesRegex(cli.ConfigError, "script_extensions must be a JSON object"):
+                cli.load_config(output, str(config), {})
+
+    def test_invalid_json_config_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            config = output / "obsidian-code-atlas.json"
+            config.write_text('{"excluded_repos": [', encoding="utf-8")
+            with self.assertRaisesRegex(cli.ConfigError, "could not load"):
+                cli.load_config(output, env={})
+
+    def test_non_object_config_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "config.json"
+            config.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(cli.ConfigError, "must be a JSON object"):
+                cli.load_config(Path(temporary), str(config), {})
 
     def test_extension_env_overrides_selected_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             config = output / "config.json"
             config.write_text(json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
-            langs = cli.load_languages(output, str(config), {
+            langs, _ = cli.load_config(output, str(config), {
                 "OBSIDIAN_CODE_ATLAS_EXTENSIONS": "-.ex,.zig:Zig:zig",
             })
             self.assertNotIn(".ex", langs)
             self.assertEqual(langs[".zig"], ("Zig", "zig"))
 
-    def test_new_extension_env_name_precedes_legacy(self):
+    def test_load_config_normalizes_excluded_repos(self):
         with tempfile.TemporaryDirectory() as temporary:
-            langs = cli.load_languages(Path(temporary), env={
-                "OBSIDIAN_CODE_ATLAS_EXTENSIONS": ".zig:Zig:zig",
-                "GH_PULLER_EXTENSIONS": ".ex:Elixir:elixir",
-            })
-        self.assertIn(".zig", langs)
-        self.assertNotIn(".ex", langs)
+            config = Path(temporary) / "config.json"
+            config.write_text(json.dumps({
+                "script_extensions": {".zig": "Zig"},
+                "excluded_repos": ["Alice/Private", "  org/Archive  ", ""],
+            }), encoding="utf-8")
+            languages, excluded_repos = cli.load_config(Path(temporary), str(config), {})
+        self.assertEqual(languages[".zig"], ("Zig", "zig"))
+        self.assertEqual(excluded_repos, frozenset({"alice/private", "org/archive"}))
+
+    def test_malformed_excluded_repos_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "config.json"
+            config.write_text(json.dumps({"excluded_repos": "alice/private"}), encoding="utf-8")
+            with self.assertRaisesRegex(cli.ConfigError, "excluded_repos must be a JSON array"):
+                cli.load_config(Path(temporary), str(config), {})
+
+    def test_malformed_config_is_a_clean_cli_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "obsidian-code-atlas.json").write_text(
+                json.dumps({"excluded_repos": "alice/private"}), encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), mock.patch.object(cli, "refresh") as refresh, \
+                 self.assertRaises(SystemExit) as caught:
+                cli.main(["refresh", "all", "--output", str(output)], env={})
+        self.assertEqual(caught.exception.code, 2)
+        self.assertFalse(refresh.called)
+        self.assertIn("excluded_repos must be a JSON array", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
 
 class TestScriptsBase(unittest.TestCase):
@@ -286,6 +304,41 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(self.run_refresh(output, section), 0)
                 self.assertEqual({path.name for path in output.iterdir()}, names)
 
+    def test_search_commits_filters_excluded_repos_before_applying_limit(self):
+        # Excluded-repo commits must not consume the COMMIT_LIMIT budget, or a
+        # busy excluded repository would shrink Activity for everything else.
+        page_one = [{"repository": {"full_name": "Alice/Private"}} for _ in range(100)]
+        page_two = [{"repository": {"full_name": "alice/included"}, "n": index} for index in range(3)]
+        responses = [json.dumps({"total_count": 103, "items": page_one}),
+                     json.dumps({"total_count": 103, "items": page_two})]
+        with mock.patch.object(cli, "gh", side_effect=responses), mock.patch("sys.stdout"):
+            commits = cli.search_commits("alice", 2, frozenset({"alice/private"}))
+        self.assertEqual(commits, page_two[:2])
+
+    def test_refresh_excludes_named_repos_from_all_outputs(self):
+        included = {"full_name": "alice/included"}
+        excluded = {"full_name": "Alice/Private"}
+        commits = [
+            {"repository": {"full_name": "alice/included"}},
+            {"repository": {"full_name": "Alice/Private"}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(cli, "whoami", return_value="alice"), \
+             mock.patch.object(cli, "get_orgs", return_value=set()), \
+             mock.patch.object(cli, "get_owned_repos", return_value={
+                 "alice/included": included, "Alice/Private": excluded}), \
+             mock.patch.object(cli, "search_commits", return_value=[commits[0]]) as search_commits, \
+             mock.patch.object(cli, "build_activity") as build_activity, \
+             mock.patch.object(cli, "build_repos") as build_repos, \
+             mock.patch.object(cli, "build_scripts"), \
+             mock.patch.object(cli, "build_issues"), \
+             mock.patch.object(cli, "write_home"), mock.patch("sys.stdout"):
+            context = cli.Context(Path(temporary).resolve(), {}, frozenset({"alice/private"}))
+            self.assertEqual(cli.refresh(context, "all"), 0)
+        self.assertEqual(search_commits.call_args.args[2], frozenset({"alice/private"}))
+        self.assertEqual(build_activity.call_args.args[1], [commits[0]])
+        self.assertEqual(build_repos.call_args.args[1], {"alice/included": included})
+
     def test_section_defaults_to_all_and_stays_under_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -388,113 +441,6 @@ class TestEntrypoints(unittest.TestCase):
         version_result = self.module("--version")
         self.assertEqual(version_result.returncode, 0, version_result.stderr)
         self.assertIn(__version__, version_result.stdout)
-
-    def test_legacy_wrapper_uses_repository_directory_output(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            checkout = Path(temporary) / "checkout with spaces"
-            checkout.mkdir()
-            shutil.copy(ROOT / "gh_puller.py", checkout / "gh_puller.py")
-            shutil.copytree(SRC, checkout / "src")
-            fake_bin = Path(temporary) / "bin"
-            fake_bin.mkdir()
-            fake_gh = fake_bin / "gh"
-            fake_gh.write_text("""#!/usr/bin/env python3
-import json, sys
-args = sys.argv[1:]
-if args[:2] == ["api", "/user"]:
-    print("alice")
-elif args[:2] == ["api", "/user/orgs"]:
-    pass
-elif args[:2] == ["repo", "list"]:
-    print("[]")
-elif args and args[0] == "api" and any("/search/commits" in arg for arg in args):
-    print(json.dumps({"items": [], "total_count": 0}))
-else:
-    print("unexpected gh arguments: " + repr(args), file=sys.stderr)
-    raise SystemExit(1)
-""", encoding="utf-8")
-            fake_gh.chmod(0o755)
-            environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"])
-            result = subprocess.run([sys.executable, str(checkout / "gh_puller.py"), "all"],
-                                    cwd=temporary, env=environment, capture_output=True, text=True, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue((checkout / "Activity.md").is_file())
-            self.assertTrue((checkout / "GitHub Dashboard.md").is_file())
-            self.assertFalse((Path(temporary) / "Activity.md").exists())
-
-            config = Path(temporary) / "custom config.json"
-            config.write_text(
-                json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
-            configured = subprocess.run(
-                [sys.executable, str(checkout / "gh_puller.py"), "scripts",
-                 "--config", str(config)], cwd=temporary, env=environment,
-                capture_output=True, text=True, check=False)
-            self.assertEqual(configured.returncode, 0, configured.stderr)
-            self.assertIn('name: "Elixir"',
-                          (checkout / "Scripts.base").read_text(encoding="utf-8"))
-
-    def test_legacy_wrapper_requires_a_section(self):
-        result = subprocess.run([sys.executable, str(ROOT / "gh_puller.py")],
-                                capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("required: command", result.stderr)
-
-
-class TestShellScripts(unittest.TestCase):
-    def test_shell_script_syntax(self):
-        for name in ("refresh.sh", "setup.sh"):
-            with self.subTest(name=name):
-                result = subprocess.run(["bash", "-n", str(ROOT / name)], check=False)
-                self.assertEqual(result.returncode, 0)
-
-
-FAKE_CRONTAB = """#!/bin/bash
-if [ "$1" = "-l" ]; then
-    [ -s "$CRONTAB_STATE" ] || exit 1
-    cat "$CRONTAB_STATE"
-else
-    cat "$1" > "$CRONTAB_STATE"
-fi
-"""
-
-
-class TestCronInstaller(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        root = Path(self.temporary.name)
-        binary = root / "bin"
-        binary.mkdir()
-        crontab = binary / "crontab"
-        crontab.write_text(FAKE_CRONTAB, encoding="utf-8")
-        crontab.chmod(0o755)
-        self.state = root / "crontab.state"
-        self.state.write_text("", encoding="utf-8")
-        self.environment = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
-                                CRONTAB_STATE=str(self.state))
-
-    def run_setup(self, *arguments):
-        result = subprocess.run(["bash", str(ROOT / "setup.sh"), *arguments], env=self.environment,
-                                capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return self.state.read_text(encoding="utf-8")
-
-    def test_install_is_idempotent_and_uninstall_preserves_unrelated_entries(self):
-        self.state.write_text("*/5 * * * * /usr/bin/true\n", encoding="utf-8")
-        self.run_setup("--cron")
-        installed = self.run_setup("--cron")
-        marker_lines = [line for line in installed.splitlines() if "# obsidian-code-atlas:" in line]
-        self.assertEqual(len(marker_lines), 1)
-        self.assertIn("obsidian_code_atlas refresh all", installed)
-        removed = self.run_setup("--uninstall")
-        self.assertNotIn("obsidian_code_atlas", removed)
-        self.assertIn("*/5 * * * * /usr/bin/true", removed)
-
-    def test_uninstall_removes_legacy_entry(self):
-        self.state.write_text("# gh_puller auto-refresh\n0 8 * * * /old/refresh.sh all\n", encoding="utf-8")
-        removed = self.run_setup("--uninstall")
-        self.assertNotIn("refresh.sh", removed)
-
 
 if __name__ == "__main__":
     unittest.main()

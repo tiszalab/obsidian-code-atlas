@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -78,37 +80,49 @@ class TestLanguageConfig(unittest.TestCase):
             output_config.unlink()
             self.assertIsNone(cli.select_config_path(output, None, {}))
 
-    def test_load_languages_rejects_missing_selected_config(self):
+    def test_load_config_rejects_missing_selected_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             missing = Path(temporary) / "missing.json"
             with self.assertRaisesRegex(FileNotFoundError, "configuration file"):
-                cli.load_languages(Path(temporary), str(missing), {})
+                cli.load_config(Path(temporary), str(missing), {})
 
     def test_empty_config_environment_uses_output_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             (output / "obsidian-code-atlas.json").write_text(
                 json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
-            languages = cli.load_languages(output, env={"OBSIDIAN_CODE_ATLAS_CONFIG": ""})
+            languages, _ = cli.load_config(output, env={"OBSIDIAN_CODE_ATLAS_CONFIG": ""})
         self.assertEqual(languages[".ex"], ("Elixir", "elixir"))
 
-    def test_malformed_script_extensions_warns(self):
+    def test_malformed_script_extensions_is_an_error(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             config = output / "config.json"
             config.write_text(json.dumps({"script_extensions": []}), encoding="utf-8")
-            with mock.patch("sys.stderr") as stderr:
-                languages = cli.load_languages(output, str(config), {})
-        self.assertEqual(languages, cli._default_languages())
-        self.assertIn("script_extensions must be a JSON object",
-                      "".join(call.args[0] for call in stderr.write.call_args_list))
+            with self.assertRaisesRegex(cli.ConfigError, "script_extensions must be a JSON object"):
+                cli.load_config(output, str(config), {})
+
+    def test_invalid_json_config_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            config = output / "obsidian-code-atlas.json"
+            config.write_text('{"excluded_repos": [', encoding="utf-8")
+            with self.assertRaisesRegex(cli.ConfigError, "could not load"):
+                cli.load_config(output, env={})
+
+    def test_non_object_config_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "config.json"
+            config.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(cli.ConfigError, "must be a JSON object"):
+                cli.load_config(Path(temporary), str(config), {})
 
     def test_extension_env_overrides_selected_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             config = output / "config.json"
             config.write_text(json.dumps({"script_extensions": {".ex": "Elixir"}}), encoding="utf-8")
-            langs = cli.load_languages(output, str(config), {
+            langs, _ = cli.load_config(output, str(config), {
                 "OBSIDIAN_CODE_ATLAS_EXTENSIONS": "-.ex,.zig:Zig:zig",
             })
             self.assertNotIn(".ex", langs)
@@ -125,15 +139,26 @@ class TestLanguageConfig(unittest.TestCase):
         self.assertEqual(languages[".zig"], ("Zig", "zig"))
         self.assertEqual(excluded_repos, frozenset({"alice/private", "org/archive"}))
 
-    def test_malformed_excluded_repos_warns(self):
+    def test_malformed_excluded_repos_is_an_error(self):
         with tempfile.TemporaryDirectory() as temporary:
             config = Path(temporary) / "config.json"
             config.write_text(json.dumps({"excluded_repos": "alice/private"}), encoding="utf-8")
-            with mock.patch("sys.stderr") as stderr:
-                _languages, excluded_repos = cli.load_config(Path(temporary), str(config), {})
-        self.assertEqual(excluded_repos, frozenset())
-        self.assertIn("excluded_repos must be a JSON array",
-                      "".join(call.args[0] for call in stderr.write.call_args_list))
+            with self.assertRaisesRegex(cli.ConfigError, "excluded_repos must be a JSON array"):
+                cli.load_config(Path(temporary), str(config), {})
+
+    def test_malformed_config_is_a_clean_cli_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "obsidian-code-atlas.json").write_text(
+                json.dumps({"excluded_repos": "alice/private"}), encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), mock.patch.object(cli, "refresh") as refresh, \
+                 self.assertRaises(SystemExit) as caught:
+                cli.main(["refresh", "all", "--output", str(output)], env={})
+        self.assertEqual(caught.exception.code, 2)
+        self.assertFalse(refresh.called)
+        self.assertIn("excluded_repos must be a JSON array", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
 
 class TestScriptsBase(unittest.TestCase):
@@ -279,6 +304,17 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(self.run_refresh(output, section), 0)
                 self.assertEqual({path.name for path in output.iterdir()}, names)
 
+    def test_search_commits_filters_excluded_repos_before_applying_limit(self):
+        # Excluded-repo commits must not consume the COMMIT_LIMIT budget, or a
+        # busy excluded repository would shrink Activity for everything else.
+        page_one = [{"repository": {"full_name": "Alice/Private"}} for _ in range(100)]
+        page_two = [{"repository": {"full_name": "alice/included"}, "n": index} for index in range(3)]
+        responses = [json.dumps({"total_count": 103, "items": page_one}),
+                     json.dumps({"total_count": 103, "items": page_two})]
+        with mock.patch.object(cli, "gh", side_effect=responses), mock.patch("sys.stdout"):
+            commits = cli.search_commits("alice", 2, frozenset({"alice/private"}))
+        self.assertEqual(commits, page_two[:2])
+
     def test_refresh_excludes_named_repos_from_all_outputs(self):
         included = {"full_name": "alice/included"}
         excluded = {"full_name": "Alice/Private"}
@@ -291,7 +327,7 @@ class TestCLI(unittest.TestCase):
              mock.patch.object(cli, "get_orgs", return_value=set()), \
              mock.patch.object(cli, "get_owned_repos", return_value={
                  "alice/included": included, "Alice/Private": excluded}), \
-             mock.patch.object(cli, "search_commits", return_value=commits), \
+             mock.patch.object(cli, "search_commits", return_value=[commits[0]]) as search_commits, \
              mock.patch.object(cli, "build_activity") as build_activity, \
              mock.patch.object(cli, "build_repos") as build_repos, \
              mock.patch.object(cli, "build_scripts"), \
@@ -299,6 +335,7 @@ class TestCLI(unittest.TestCase):
              mock.patch.object(cli, "write_home"), mock.patch("sys.stdout"):
             context = cli.Context(Path(temporary).resolve(), {}, frozenset({"alice/private"}))
             self.assertEqual(cli.refresh(context, "all"), 0)
+        self.assertEqual(search_commits.call_args.args[2], frozenset({"alice/private"}))
         self.assertEqual(build_activity.call_args.args[1], [commits[0]])
         self.assertEqual(build_repos.call_args.args[1], {"alice/included": included})
 

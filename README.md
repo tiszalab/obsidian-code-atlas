@@ -168,7 +168,7 @@ Create `obsidian-code-atlas.json` in the output directory using this structure (
 }
 ```
 
-`excluded_repos` contains case-insensitive `owner/repository` names. Excluded repositories are omitted from activity, repository, script, and issue output. A `script_extensions` value of `null` removes an extension. Configuration is selected in this exact order:
+`excluded_repos` contains case-insensitive `owner/repository` names. Excluded repositories are omitted from activity, repository, script, and issue output. A `script_extensions` value of `null` removes an extension. A configuration file that cannot be parsed or validated aborts the command with an error instead of falling back to the defaults. Configuration is selected in this exact order:
 
 1. explicit `--config PATH`;
 2. `OBSIDIAN_CODE_ATLAS_CONFIG`;

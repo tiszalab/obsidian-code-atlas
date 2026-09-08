@@ -334,7 +334,7 @@ class TestInitRefreshFailure(unittest.TestCase):
         (self.vault / ".obsidian").mkdir()
 
     def test_failed_refresh_skips_scheduler_but_explains_why(self):
-        with mock.patch.object(cli, "load_languages", return_value={}), \
+        with mock.patch.object(cli, "load_config", return_value=({}, frozenset())), \
              mock.patch.object(cli, "refresh", return_value=1), \
              mock.patch.object(scheduler, "install_launchd") as install_launchd:
             _, _, info, rc = init.run_init(
@@ -356,7 +356,7 @@ class TestInitRefreshFailure(unittest.TestCase):
 
     def test_unwritable_generated_path_is_a_clean_error(self):
         stderr = io.StringIO()
-        with mock.patch.object(cli, "load_languages", return_value={}), \
+        with mock.patch.object(cli, "load_config", return_value=({}, frozenset())), \
              mock.patch.object(cli, "refresh",
                                side_effect=cli.ManagedPathError("escapes output directory")), \
              contextlib.redirect_stderr(stderr):

@@ -9,6 +9,8 @@ launchd.err.log
 # Generated dashboard content
 Activity.md
 GitHub Dashboard.md
+Issues/
+Issues.base
 Repos/
 Repos.base
 Scripts/

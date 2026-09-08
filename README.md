@@ -2,6 +2,10 @@
 
 Mirror your GitHub code into an [Obsidian](https://obsidian.md/) vault.
 
+<p align="center">
+  <img src="images/obsca-scheme1.png" alt="obsidian-code-atlas schematic" width="500">
+</p>
+
 > [!NOTE]
 > **Who is this for?** 
 > 

@@ -1,4 +1,8 @@
 {
+  "excluded_repos": [
+    "owner/private-repo",
+    "organization/archived-repo"
+  ],
   "script_extensions": {
     ".ex": {"label": "Elixir", "fence": "elixir"},
     ".exs": {"label": "Elixir Script", "fence": "elixir"},

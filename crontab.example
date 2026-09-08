@@ -1,3 +1,0 @@
-# Deprecated checkout-only example. Installed packages should run:
-# obsidian-code-atlas scheduler install --cron --output "/path/to/Vault/Code Atlas"
-0 8 * * * /path/to/your/checkout/refresh.sh all

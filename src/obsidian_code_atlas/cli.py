@@ -16,7 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
 from . import __version__
 from . import scheduler
@@ -111,29 +111,27 @@ def _parse_env_extensions(value: str) -> Dict[str, Optional[Tuple[str, str]]]:
 
 def select_config_path(output: Path, explicit: Optional[str], env: Mapping[str, str]) -> Optional[Path]:
     """Select configuration using the documented precedence."""
-    configured = explicit if explicit is not None else (
-        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG") or None
-    )
+    configured = explicit if explicit is not None else env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or None
     if configured is not None:
         return Path(configured).expanduser().resolve()
-    for name in ("obsidian-code-atlas.json", "gh_puller.json"):
-        candidate = output / name
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = output / "obsidian-code-atlas.json"
+    return candidate if candidate.is_file() else None
 
 
-def load_languages(output: Path, explicit_config: Optional[str] = None,
-                   env: Optional[Mapping[str, str]] = None) -> LanguageMap:
+def load_config(output: Path, explicit_config: Optional[str] = None,
+                env: Optional[Mapping[str, str]] = None) -> Tuple[LanguageMap, FrozenSet[str]]:
     environment = os.environ if env is None else env
     langs = _default_languages()
+    excluded_repos: FrozenSet[str] = frozenset()
     config_path = select_config_path(output, explicit_config, environment)
     if config_path is not None:
         if not config_path.is_file():
             raise FileNotFoundError("configuration file does not exist or is not a file: {}".format(config_path))
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(config, dict) and "script_extensions" in config:
+            if not isinstance(config, dict):
+                raise ValueError("configuration must be a JSON object")
+            if "script_extensions" in config:
                 extensions = config["script_extensions"]
                 if not isinstance(extensions, dict):
                     raise ValueError("script_extensions must be a JSON object")
@@ -142,17 +140,26 @@ def load_languages(output: Path, explicit_config: Optional[str] = None,
                         langs.pop(ext, None)
                     else:
                         langs[ext] = value
+            if "excluded_repos" in config:
+                names = config["excluded_repos"]
+                if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                    raise ValueError("excluded_repos must be a JSON array of repository names")
+                excluded_repos = frozenset(name.strip().lower() for name in names if name.strip())
         except Exception as exc:
             print("Warning: could not load {}: {}".format(config_path, exc), file=sys.stderr)
-    extension_env = environment.get("OBSIDIAN_CODE_ATLAS_EXTENSIONS") or environment.get(
-        "GH_PULLER_EXTENSIONS", "")
+    extension_env = environment.get("OBSIDIAN_CODE_ATLAS_EXTENSIONS", "")
     if extension_env:
         for ext, value in _parse_env_extensions(extension_env).items():
             if value is None:
                 langs.pop(ext, None)
             else:
                 langs[ext] = value
-    return langs
+    return langs, excluded_repos
+
+
+def load_languages(output: Path, explicit_config: Optional[str] = None,
+                   env: Optional[Mapping[str, str]] = None) -> LanguageMap:
+    return load_config(output, explicit_config, env)[0]
 
 
 class ManagedPathError(ValueError):
@@ -163,6 +170,7 @@ class ManagedPathError(ValueError):
 class Context:
     output: Path
     languages: LanguageMap
+    excluded_repos: FrozenSet[str] = frozenset()
 
     def path(self, *parts: str) -> Path:
         candidate = self.output.joinpath(*parts).resolve()
@@ -800,8 +808,14 @@ def refresh(context: Context, section: str) -> int:
     scope = {login} | orgs
     print("Authenticated as {}".format(login))
     print("Orgs in mirror scope: {}\n".format(", ".join(sorted(orgs)) or "(none)"))
-    repos = get_owned_repos()
-    commits = search_commits(login, COMMIT_LIMIT)
+    repos = {
+        full: repo for full, repo in get_owned_repos().items()
+        if full.lower() not in context.excluded_repos
+    }
+    commits = [
+        commit for commit in search_commits(login, COMMIT_LIMIT)
+        if commit["repository"]["full_name"].lower() not in context.excluded_repos
+    ]
     for full in sorted(repos_from_commits(commits)):
         if full in repos:
             continue
@@ -893,9 +907,7 @@ def _explicit_config_path(explicit: Optional[str], env: Mapping[str, str]) -> Op
     file that was merely *found*, or deleting/renaming it later turns a soft
     default into a hard failure every night.
     """
-    configured = explicit if explicit is not None else (
-        env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or env.get("GH_PULLER_CONFIG") or None
-    )
+    configured = explicit if explicit is not None else env.get("OBSIDIAN_CODE_ATLAS_CONFIG") or None
     if configured is None:
         return None
     return Path(configured).expanduser().resolve()
@@ -1013,10 +1025,10 @@ def main(argv: Optional[List[str]] = None, env: Optional[Mapping[str, str]] = No
     if not output.is_dir():
         parser.error("output path is not a directory: {}".format(output))
     try:
-        languages = load_languages(output, args.config, environment)
+        languages, excluded_repos = load_config(output, args.config, environment)
     except FileNotFoundError as exc:
         parser.error(str(exc))
-    context = Context(output=output, languages=languages)
+    context = Context(output=output, languages=languages, excluded_repos=excluded_repos)
     try:
         return refresh(context, args.section)
     except ManagedPathError as exc:
